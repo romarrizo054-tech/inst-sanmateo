@@ -8,12 +8,16 @@ PORT:
 
 USERNAME:
 
-3dQc1tnU3u466h8.root
+4XEC1sgwTAG3AwR.root
 
 PASSWORD:
 
-<PASSWORD>
+7GqvwWFgdFjznkrb
 
 DATABASE:
 
 sys
+
+CA:
+
+<CA_PATH>
