@@ -4,28 +4,56 @@ const mysql = require('mysql2/promise');
 const path = require('path');
 
 const app = express();
-app.use(cors());
+
+// ==========================================
+// CONFIGURACIÓN DE CORS Y PARSER
+// ==========================================
+const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://inst-sanmateo.onrender.com';
+
+const origenesPermitidos = [
+  'https://inst-sanmateo.onrender.com',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    // Permite peticiones sin origen (como apps móviles, Postman o el mismo servidor)
+    if (!origin || origenesPermitidos.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, true); // Permite acceso general si cambia de subdominio
+  },
+  credentials: true
+}));
+
 app.use(express.json());
 
-// Render y TiDB Cloud entregan la configuración mediante variables de entorno.
+// ==========================================
+// CONEXIÓN A LA BASE DE DATOS (TIDB CLOUD)
+// ==========================================
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   port: Number(process.env.DB_PORT || 4000),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME || 'libro_matriz',
-  ssl: { minVersion: 'TLSv1.2' },
+  ssl: {
+    minVersion: 'TLSv1.2',
+    rejectUnauthorized: false
+  },
   waitForConnections: true,
   connectionLimit: 10
 });
 
 pool.getConnection()
   .then(conn => {
-    console.log('✅ Conectado exitosamente a la base de datos MySQL');
+    console.log('✅ Conectado exitosamente a la base de datos TiDB Cloud');
     conn.release();
   })
   .catch(err => {
-    console.error('❌ Error de conexión a MySQL:', err.message);
+    console.error('❌ Error de conexión a TiDB Cloud:', err.message);
   });
 
 // ==========================================
@@ -85,7 +113,9 @@ app.post('/api/alumnos', async (req, res) => {
         cuota_al_dia = VALUES(cuota_al_dia)
     `;
 
-    const fechaNac = fecha_nacimiento && String(fecha_nacimiento).trim() !== '' ? fecha_nacimiento : (el_dia && String(el_dia).trim() !== '' ? el_dia : null);
+    const fechaNac = fecha_nacimiento && String(fecha_nacimiento).trim() !== '' 
+      ? fecha_nacimiento 
+      : (el_dia && String(el_dia).trim() !== '' ? el_dia : null);
 
     await connection.query(queryAlumno, [
       dni.trim(),
@@ -202,7 +232,7 @@ app.get('/api/inscripcion/validar/:dni', async (req, res) => {
 
     // Consultar materias aprobadas (nota >= 4 o condición P/R)
     const [calificaciones] = await pool.query(
-      'SELECT materia FROM calificaciones WHERE alumno_dni = ? AND (nota_num >= 4 OR condicion IN (\'P\', \'R\'))',
+      "SELECT materia FROM calificaciones WHERE alumno_dni = ? AND (nota_num >= 4 OR condicion IN ('P', 'R'))",
       [dni]
     );
     const materiasAprobadas = calificaciones.map(c => c.materia.trim().toLowerCase());
@@ -283,12 +313,20 @@ app.get('/api/secretaria/alumnos', async (req, res) => {
   }
 });
 
-// Render publica frontend y API bajo el mismo dominio.
+// ==========================================
+// 3. ARCHIVOS ESTÁTICOS DEL FRONTEND
+// ==========================================
 const frontendDist = path.resolve(__dirname, '../frontend/dist');
 app.use(express.static(frontendDist));
 app.get(/.*/, (_req, res) => res.sendFile(path.join(frontendDist, 'index.html')));
 
+// ==========================================
+// INICIO DEL SERVIDOR
+// ==========================================
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+  console.log('==========================================');
   console.log(`🚀 Servidor backend activo en puerto ${PORT}`);
+  console.log(`🌐 URL Pública: ${RENDER_URL}`);
+  console.log('==========================================');
 });
