@@ -17,3 +17,5 @@ services:
         sync: false
       - key: DB_NAME
         value: libro_matriz
+      - key: ADMIN_SECRET
+        sync: false

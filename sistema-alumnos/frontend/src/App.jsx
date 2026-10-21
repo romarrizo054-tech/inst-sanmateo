@@ -1,5 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
+import AlumnoInscripcion from './AlumnoInscripcion';
+
+const ADMIN_KEY_STORAGE = 'sanmateo-admin-key';
+const API_BASE = import.meta.env.VITE_API_URL || '';
+
+function adminFetch(url, options = {}) {
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      'x-admin-key': sessionStorage.getItem(ADMIN_KEY_STORAGE) || ''
+    }
+  });
+}
 
 const PLAN_MATERIAS = [
   { anio_carrera: 'PRIMER AÑO', materia: 'Estado Sociedad y Cultura' },
@@ -33,10 +47,9 @@ const OFERTA_INSCRIPCION = [
   'Inglés Técnico'
 ];
 
-export default function App() {
+function GestionAcademica() {
   const [panelActivo, setPanelActivo] = useState('inscripcion'); // 'inscripcion' | 'inscriptos' | 'matriz'
 
-  const API_BASE = import.meta.env.VITE_API_URL || '';
 
   // ================= ESTADOS: INSCRIPCIÓN ALUMNOS =================
   const [dniInscripcion, setDniInscripcion] = useState('');
@@ -90,7 +103,7 @@ export default function App() {
 
   const cargarInscriptos = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/secretaria/inscriptos`);
+      const res = await adminFetch(`${API_BASE}/api/secretaria/inscriptos`);
       const data = await res.json();
       setListaInscriptos(Array.isArray(data) ? data : []);
     } catch (err) {
@@ -101,7 +114,7 @@ export default function App() {
 
   const cargarAlumnosMatriz = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/secretaria/alumnos`);
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos`);
       if (!res.ok) throw new Error('No se pudo cargar el padrón del Libro Matriz');
       setAlumnosMatriz(await res.json());
     } catch (err) {
@@ -208,7 +221,7 @@ export default function App() {
     setErrorMatriz('');
     setAlumnoMatriz(null);
     try {
-      const res = await fetch(`${API_BASE}/api/alumnos/${dniBusquedaMatriz.trim()}`);
+      const res = await adminFetch(`${API_BASE}/api/alumnos/${dniBusquedaMatriz.trim()}`);
       if (!res.ok) throw new Error('Alumno no encontrado');
       const data = await res.json();
       setAlumnoMatriz(data);
@@ -222,7 +235,7 @@ export default function App() {
     const nuevoEstado = !alumnoMatriz.cuota_al_dia;
     setCargandoCuota(true);
     try {
-      const res = await fetch(`${API_BASE}/api/alumnos/${alumnoMatriz.dni}/cuota`, {
+      const res = await adminFetch(`${API_BASE}/api/alumnos/${alumnoMatriz.dni}/cuota`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cuota_al_dia: nuevoEstado })
@@ -281,7 +294,7 @@ export default function App() {
   const handleGuardarMatriz = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_BASE}/api/alumnos`, {
+      const res = await adminFetch(`${API_BASE}/api/alumnos`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...formMatriz, materias: materiasMatriz })
@@ -1158,5 +1171,62 @@ export default function App() {
         )}
       </main>
     </div>
+  );
+}
+
+function AccesoSecretaria({ onAuthenticated }) {
+  const [clave, setClave] = useState('');
+  const [error, setError] = useState('');
+  const [cargando, setCargando] = useState(false);
+
+  const ingresar = async (event) => {
+    event.preventDefault();
+    setError('');
+    setCargando(true);
+    try {
+      const response = await fetch(`${API_BASE}/api/secretaria/auth`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ adminKey: clave })
+      });
+      if (!response.ok) throw new Error('Clave incorrecta o acceso no configurado.');
+      sessionStorage.setItem(ADMIN_KEY_STORAGE, clave);
+      onAuthenticated();
+    } catch (err) {
+      setError(err.message || 'No se pudo validar el acceso.');
+    } finally {
+      setCargando(false);
+    }
+  };
+
+  return (
+    <main style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', background: '#eaf0f5', fontFamily: 'Segoe UI, sans-serif', padding: 20 }}>
+      <form onSubmit={ingresar} style={{ width: 'min(100%, 380px)', background: '#fff', padding: 28, borderRadius: 12, boxShadow: '0 8px 28px #16365422' }}>
+        <h1 style={{ color: '#163654', fontSize: 22 }}>Acceso de secretaría</h1>
+        <label htmlFor="admin-key">Clave de acceso</label>
+        <input id="admin-key" type="password" autoComplete="current-password" value={clave} onChange={event => setClave(event.target.value)} required style={{ display: 'block', width: '100%', boxSizing: 'border-box', padding: 11, margin: '8px 0 14px', border: '1px solid #94a3b8', borderRadius: 6 }} />
+        {error && <p role="alert" style={{ color: '#b91c1c' }}>{error}</p>}
+        <button type="submit" disabled={cargando} style={{ padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{cargando ? 'Verificando...' : 'Ingresar'}</button>
+      </form>
+    </main>
+  );
+}
+
+export default function App() {
+  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem(ADMIN_KEY_STORAGE));
+  const rutaSecretaria = window.location.pathname === '/secretaria';
+
+  if (!rutaSecretaria) return <AlumnoInscripcion />;
+  if (!adminKey) return <AccesoSecretaria onAuthenticated={() => setAdminKey(sessionStorage.getItem(ADMIN_KEY_STORAGE))} />;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => { sessionStorage.removeItem(ADMIN_KEY_STORAGE); setAdminKey(null); }}
+        style={{ position: 'fixed', zIndex: 10, top: 12, right: 12, padding: '8px 12px', borderRadius: 6, border: 0, cursor: 'pointer' }}
+      >Cerrar sesión</button>
+      <GestionAcademica />
+    </>
   );
 }

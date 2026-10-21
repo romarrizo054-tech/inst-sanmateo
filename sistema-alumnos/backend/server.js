@@ -30,6 +30,31 @@ app.use(cors({
 
 app.use(express.json());
 
+function validarClaveSecretaria(clave) {
+  const claveConfigurada = process.env.ADMIN_SECRET;
+  return Boolean(claveConfigurada && clave && clave === claveConfigurada);
+}
+
+function requiereSecretaria(req, res, next) {
+  if (!process.env.ADMIN_SECRET) {
+    return res.status(503).json({ error: 'Acceso de secretaría no está configurado' });
+  }
+  if (!validarClaveSecretaria(req.get('x-admin-key'))) {
+    return res.status(401).json({ error: 'Acceso no autorizado' });
+  }
+  next();
+}
+
+app.post('/api/secretaria/auth', (req, res) => {
+  if (!process.env.ADMIN_SECRET) {
+    return res.status(503).json({ error: 'Acceso de secretaría no está configurado' });
+  }
+  if (!validarClaveSecretaria(req.body.adminKey)) {
+    return res.status(401).json({ error: 'Clave incorrecta' });
+  }
+  res.json({ message: 'Acceso autorizado' });
+});
+
 // ==========================================
 // CONEXIÓN A LA BASE DE DATOS (TIDB CLOUD)
 // ==========================================
@@ -61,7 +86,7 @@ pool.getConnection()
 // ==========================================
 
 // Guardar o Actualizar Ficha Completa del Alumno
-app.post('/api/alumnos', async (req, res) => {
+app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
   let connection;
   try {
     connection = await pool.getConnection();
@@ -173,7 +198,7 @@ app.post('/api/alumnos', async (req, res) => {
 });
 
 // Buscar Alumno y Ficha por DNI
-app.get('/api/alumnos/:dni', async (req, res) => {
+app.get('/api/alumnos/:dni', requiereSecretaria, async (req, res) => {
   try {
     const dni = req.params.dni.trim();
     const [alumnos] = await pool.query('SELECT * FROM alumnos WHERE dni = ?', [dni]);
@@ -194,7 +219,7 @@ app.get('/api/alumnos/:dni', async (req, res) => {
 });
 
 // Actualizar Cuota (Secretaría)
-app.patch('/api/alumnos/:dni/cuota', async (req, res) => {
+app.patch('/api/alumnos/:dni/cuota', requiereSecretaria, async (req, res) => {
   try {
     const { dni } = req.params;
     const { cuota_al_dia } = req.body;
@@ -277,7 +302,7 @@ app.post('/api/inscripcion/confirmar', async (req, res) => {
 });
 
 // Ver padrón de inscriptos para el panel de secretaría
-app.get('/api/secretaria/inscriptos', async (req, res) => {
+app.get('/api/secretaria/inscriptos', requiereSecretaria, async (req, res) => {
   try {
     const query = `
       SELECT 
@@ -299,7 +324,7 @@ app.get('/api/secretaria/inscriptos', async (req, res) => {
 });
 
 // Ver alumnos cargados en el libro matriz
-app.get('/api/secretaria/alumnos', async (req, res) => {
+app.get('/api/secretaria/alumnos', requiereSecretaria, async (req, res) => {
   try {
     const [rows] = await pool.query(`
       SELECT dni, alumno, carrera, turno, anio_cursado, cuota_al_dia
