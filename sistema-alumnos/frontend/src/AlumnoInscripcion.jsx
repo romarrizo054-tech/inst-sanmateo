@@ -1,15 +1,4 @@
-import React, { useState } from 'react';
-
-const OFERTA_MATERIAS = [
-  'Comunicación y TIC',
-  'Primeros Auxilios',
-  'Bacteriología y Prep. De Mater.',
-  'Organización y Gestión de las I.S.',
-  'Inmunología',
-  'Biología y Genética',
-  'Procedimientos Específicos',
-  'Inglés Técnico'
-];
+import React, { useEffect, useState } from 'react';
 
 export default function AlumnoInscripcion() {
   const [dni, setDni] = useState('');
@@ -18,9 +7,20 @@ export default function AlumnoInscripcion() {
   const [exito, setExito] = useState('');
   const [materiasElegidas, setMateriasElegidas] = useState([]);
   const [cargando, setCargando] = useState(false);
+  const [ofertasDisponibles, setOfertasDisponibles] = useState([]);
 
   // Reemplaza con la URL de tu backend (o tu túnel de Pinggy para el puerto 3001)
   const API_BASE = import.meta.env.VITE_API_URL || '';
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/inscripcion/ofertas`)
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'No se pudo cargar la oferta');
+        setOfertasDisponibles(data);
+      })
+      .catch(err => setError(err.message));
+  }, [API_BASE]);
 
   const handleConsultar = async (e) => {
     e.preventDefault();
@@ -42,14 +42,19 @@ export default function AlumnoInscripcion() {
     }
   };
 
-  const verificarHabilitacion = (materia) => {
+  const verificarHabilitacion = (oferta) => {
     if (!datosAlumno) return { habilitada: false, motivo: '' };
-    if (datosAlumno.materiasInscriptas.includes(materia)) {
+    if ((datosAlumno.ofertasInscriptas || []).includes(Number(oferta.id))) {
+      return { habilitada: false, motivo: 'Ya estás inscripto' };
+    }
+    const materia = oferta.materia;
+    if (oferta.tipo === 'CURSO' && (datosAlumno.materiasInscriptas || []).includes(materia)) {
       return { habilitada: false, motivo: 'Ya estás inscripto' };
     }
     if (datosAlumno.materiasAprobadas.includes(materia.toLowerCase())) {
       return { habilitada: false, motivo: 'Materia ya aprobada' };
     }
+    if (oferta.tipo === 'MESA_EXAMEN') return { habilitada: true, motivo: 'Habilitada para rendir' };
     const correlativasRequeridas = (datosAlumno.reglasCorrelativas || [])
       .filter(r => r.materia_objetivo.toLowerCase() === materia.toLowerCase())
       .map(r => r.materia_requerida);
@@ -62,20 +67,20 @@ export default function AlumnoInscripcion() {
     return { habilitada: true, motivo: 'Habilitada para cursar' };
   };
 
-  const handleToggle = (materia) => {
+  const handleToggle = (ofertaId) => {
     setMateriasElegidas(prev =>
-      prev.includes(materia) ? prev.filter(m => m !== materia) : [...prev, materia]
+      prev.includes(ofertaId) ? prev.filter(id => id !== ofertaId) : [...prev, ofertaId]
     );
   };
 
   const handleConfirmar = async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/inscripcion/confirmar`, {
+      const res = await fetch(`${API_BASE}/api/inscripcion/confirmar-ofertas`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dni: datosAlumno.alumno.dni,
-          materiasSeleccionadas: materiasElegidas
+          ofertaIds: materiasElegidas
         })
       });
       const data = await res.json();
@@ -84,11 +89,11 @@ export default function AlumnoInscripcion() {
       setExito('¡Inscripción registrada con éxito!');
       setDatosAlumno({
         ...datosAlumno,
-        materiasInscriptas: [...datosAlumno.materiasInscriptas, ...materiasElegidas]
+        ofertasInscriptas: [...(datosAlumno.ofertasInscriptas || []), ...materiasElegidas]
       });
       setMateriasElegidas([]);
     } catch (err) {
-      alert(err.message);
+      setError(err.message);
     }
   };
 
@@ -282,7 +287,7 @@ export default function AlumnoInscripcion() {
 
               {/* LISTA DE MATERIAS */}
               <h3 style={{ fontSize: '16px', color: '#163654', margin: '0 0 12px 0', borderBottom: '2px solid #e2e8f0', paddingBottom: '6px' }}>
-                Asignaturas Disponibles
+                Cursos y mesas de examen disponibles
               </h3>
 
               <div style={{
@@ -291,19 +296,25 @@ export default function AlumnoInscripcion() {
                 overflow: 'hidden',
                 marginBottom: '24px'
               }}>
-                {OFERTA_MATERIAS.map((mat, i) => {
-                  const { habilitada, motivo } = verificarHabilitacion(mat);
-                  const isChecked = materiasElegidas.includes(mat);
+                {ofertasDisponibles.map((oferta, i) => {
+                  const { habilitada, motivo } = verificarHabilitacion(oferta);
+                  const isChecked = materiasElegidas.includes(Number(oferta.id));
+                  const formatDate = date => date
+                    ? new Date(`${String(date).slice(0, 10)}T00:00:00`).toLocaleDateString()
+                    : '';
+                  const fechaTexto = oferta.tipo === 'MESA_EXAMEN'
+                    ? (oferta.fecha_examen ? `Fecha de mesa ${formatDate(oferta.fecha_examen)}` : '')
+                    : [oferta.fecha_inicio && `Desde ${formatDate(oferta.fecha_inicio)}`, oferta.fecha_fin && `hasta ${formatDate(oferta.fecha_fin)}`].filter(Boolean).join(' ');
 
                   return (
                     <div
-                      key={i}
+                      key={oferta.id}
                       style={{
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
                         padding: '14px 18px',
-                        borderBottom: i < OFERTA_MATERIAS.length - 1 ? '1px solid #e2e8f0' : 'none',
+                        borderBottom: i < ofertasDisponibles.length - 1 ? '1px solid #e2e8f0' : 'none',
                         background: isChecked ? '#f0f7ff' : habilitada ? '#ffffff' : '#f8fafc',
                         transition: 'background 0.2s'
                       }}>
@@ -312,7 +323,7 @@ export default function AlumnoInscripcion() {
                           type="checkbox"
                           disabled={!habilitada}
                           checked={isChecked}
-                          onChange={() => handleToggle(mat)}
+                          onChange={() => handleToggle(Number(oferta.id))}
                           style={{
                             width: '18px',
                             height: '18px',
@@ -325,7 +336,13 @@ export default function AlumnoInscripcion() {
                           color: habilitada ? '#1e293b' : '#94a3b8',
                           fontSize: '15px'
                         }}>
-                          {mat}
+                          <span>
+                            <strong>{oferta.tipo === 'MESA_EXAMEN' ? 'Mesa de examen' : 'Curso'}</strong>
+                            {' · '}{oferta.materia}
+                            {oferta.anio_carrera ? ` · ${oferta.anio_carrera}` : ''}
+                            {fechaTexto ? ` · ${fechaTexto}` : ''}
+                            {oferta.horario ? ` · ${oferta.horario}` : ''}
+                          </span>
                         </span>
                       </label>
 
@@ -339,6 +356,9 @@ export default function AlumnoInscripcion() {
                     </div>
                   );
                 })}
+                {ofertasDisponibles.length === 0 && (
+                  <p style={{ padding: 16, margin: 0, color: '#64748b' }}>Secretaría todavía no publicó cursos ni mesas de examen.</p>
+                )}
               </div>
 
               {/* BOTÓN CONFIRMAR */}

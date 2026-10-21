@@ -62,6 +62,12 @@ function GestionAcademica() {
   // ================= ESTADOS: SECRETARÍA - PADRÓN =================
   const [listaInscriptos, setListaInscriptos] = useState([]);
   const [filtroMateria, setFiltroMateria] = useState('TODAS');
+  const [ofertasAcademicas, setOfertasAcademicas] = useState([]);
+  const [errorOferta, setErrorOferta] = useState('');
+  const [guardandoOferta, setGuardandoOferta] = useState(false);
+  const [formOferta, setFormOferta] = useState({
+    tipo: 'CURSO', materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: ''
+  });
 
   // ================= ESTADOS: SECRETARÍA - LIBRO MATRIZ =================
   const [subTabMatriz, setSubTabMatriz] = useState('buscar'); // 'buscar' | 'cargar' | 'listado'
@@ -99,6 +105,7 @@ function GestionAcademica() {
     if (panelActivo === 'inscriptos') {
       cargarInscriptos();
     }
+    if (panelActivo === 'ofertas') cargarOfertasAcademicas();
   }, [panelActivo]);
 
   const cargarInscriptos = async () => {
@@ -120,6 +127,53 @@ function GestionAcademica() {
     } catch (err) {
       console.error('Error al cargar alumnos del Libro Matriz:', err);
       setAlumnosMatriz([]);
+    }
+  };
+
+  const cargarOfertasAcademicas = async () => {
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/ofertas`);
+      if (!res.ok) throw new Error('No se pudo cargar cursos y mesas');
+      setOfertasAcademicas(await res.json());
+      setErrorOferta('');
+    } catch (err) {
+      setErrorOferta(err.message);
+    }
+  };
+
+  const guardarOfertaAcademica = async (event) => {
+    event.preventDefault();
+    setErrorOferta('');
+    setGuardandoOferta(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/ofertas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formOferta)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar la oferta');
+      setFormOferta({ tipo: formOferta.tipo, materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: '' });
+      await cargarOfertasAcademicas();
+    } catch (err) {
+      setErrorOferta(err.message);
+    } finally {
+      setGuardandoOferta(false);
+    }
+  };
+
+  const cambiarEstadoOferta = async (oferta) => {
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/ofertas/${oferta.id}/estado`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activa: !oferta.activa })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo cambiar el estado');
+      await cargarOfertasAcademicas();
+    } catch (err) {
+      setErrorOferta(err.message);
     }
   };
 
@@ -317,6 +371,7 @@ function GestionAcademica() {
 
   const descargarExcelInscriptos = () => {
     const filas = inscriptosFiltrados.map(item => ({
+      Tipo: item.tipo === 'MESA_EXAMEN' ? 'Mesa de examen' : 'Curso',
       Materia: item.materia,
       DNI: item.dni,
       Alumno: item.alumno,
@@ -325,7 +380,7 @@ function GestionAcademica() {
         : ''
     }));
     const hoja = XLSX.utils.json_to_sheet(filas, {
-      header: ['Materia', 'DNI', 'Alumno', 'Fecha']
+      header: ['Tipo', 'Materia', 'DNI', 'Alumno', 'Fecha']
     });
     const libro = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(libro, hoja, 'Inscriptos');
@@ -437,6 +492,17 @@ function GestionAcademica() {
               transition: 'all 0.2s'
             }}>
             📖 Libro Matriz y Cuotas
+          </button>
+
+          <button
+            onClick={() => setPanelActivo('ofertas')}
+            style={{
+              padding: '9px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+              fontWeight: '600', fontSize: '14px',
+              background: panelActivo === 'ofertas' ? '#ffffff' : 'rgba(255,255,255,0.15)',
+              color: panelActivo === 'ofertas' ? '#163654' : '#e2edf3'
+            }}>
+            📚 Cursos y mesas
           </button>
         </div>
       </header>
@@ -641,6 +707,7 @@ function GestionAcademica() {
             <table border="1" cellPadding="10" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
               <thead style={{ background: '#f1f5f9', color: '#163654' }}>
                 <tr>
+                  <th>Tipo</th>
                   <th>Materia</th>
                   <th>D.N.I.</th>
                   <th>Estudiante</th>
@@ -651,6 +718,7 @@ function GestionAcademica() {
                 {inscriptosFiltrados.length > 0 ? (
                   inscriptosFiltrados.map(item => (
                     <tr key={item.id}>
+                      <td>{item.tipo === 'MESA_EXAMEN' ? 'Mesa de examen' : 'Curso'}</td>
                       <td><strong style={{ color: '#204c73' }}>{item.materia}</strong></td>
                       <td>{item.dni}</td>
                       <td>{item.alumno}</td>
@@ -659,13 +727,71 @@ function GestionAcademica() {
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="4" align="center" style={{ padding: '20px', color: '#64748b' }}>
+                    <td colSpan="5" align="center" style={{ padding: '20px', color: '#64748b' }}>
                       No hay inscripciones registradas para esta materia.
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {panelActivo === 'ofertas' && (
+          <div style={{ background: '#ffffff', borderRadius: '16px', padding: '25px', boxShadow: '0 20px 40px rgba(15, 34, 53, 0.3)' }}>
+            <h2 style={{ marginTop: 0, color: '#163654' }}>Administrar cursos y mesas de examen</h2>
+            <p style={{ color: '#475569' }}>Las ofertas activas aparecerán en el panel del alumno. Las ofertas inactivas se conservan junto a sus inscripciones anteriores.</p>
+
+            <form onSubmit={guardarOfertaAcademica} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22 }}>
+              <label style={{ display: 'grid', gap: 5 }}>Tipo
+                <select value={formOferta.tipo} onChange={e => setFormOferta({ ...formOferta, tipo: e.target.value })} style={{ padding: 9 }}>
+                  <option value="CURSO">Curso</option>
+                  <option value="MESA_EXAMEN">Mesa de examen</option>
+                </select>
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Materia o curso
+                <input required maxLength="255" value={formOferta.materia} onChange={e => setFormOferta({ ...formOferta, materia: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Año
+                <input value={formOferta.anio_carrera} onChange={e => setFormOferta({ ...formOferta, anio_carrera: e.target.value })} placeholder="Ej.: 1er Año" style={{ padding: 9 }} />
+              </label>
+              {formOferta.tipo === 'CURSO' ? <>
+                <label style={{ display: 'grid', gap: 5 }}>Fecha de inicio
+                  <input type="date" value={formOferta.fecha_inicio} onChange={e => setFormOferta({ ...formOferta, fecha_inicio: e.target.value })} style={{ padding: 9 }} />
+                </label>
+                <label style={{ display: 'grid', gap: 5 }}>Fecha de finalización
+                  <input type="date" value={formOferta.fecha_fin} onChange={e => setFormOferta({ ...formOferta, fecha_fin: e.target.value })} style={{ padding: 9 }} />
+                </label>
+              </> : <label style={{ display: 'grid', gap: 5 }}>Fecha de examen
+                <input type="date" required value={formOferta.fecha_examen} onChange={e => setFormOferta({ ...formOferta, fecha_examen: e.target.value })} style={{ padding: 9 }} />
+              </label>}
+              <label style={{ display: 'grid', gap: 5 }}>Horario (opcional)
+                <input value={formOferta.horario} onChange={e => setFormOferta({ ...formOferta, horario: e.target.value })} placeholder="Ej.: 18:00" style={{ padding: 9 }} />
+              </label>
+              <button type="submit" disabled={guardandoOferta} style={{ alignSelf: 'end', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoOferta ? 'Guardando…' : 'Agregar oferta'}</button>
+            </form>
+
+            {errorOferta && <p role="alert" style={{ color: '#b91c1c' }}>{errorOferta}</p>}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h3 style={{ color: '#163654' }}>Ofertas ({ofertasAcademicas.length})</h3>
+              <button onClick={cargarOfertasAcademicas} style={{ padding: '8px 12px', cursor: 'pointer' }}>Actualizar</button>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
+                <thead style={{ background: '#f1f5f9' }}><tr><th>Tipo</th><th>Materia/curso</th><th>Año</th><th>Fechas</th><th>Horario</th><th>Estado</th><th>Acción</th></tr></thead>
+                <tbody>{ofertasAcademicas.map(oferta => (
+                  <tr key={oferta.id}>
+                    <td>{oferta.tipo === 'MESA_EXAMEN' ? 'Mesa de examen' : 'Curso'}</td>
+                    <td>{oferta.materia}</td>
+                    <td>{oferta.anio_carrera || '—'}</td>
+                    <td>{oferta.fecha_examen || [oferta.fecha_inicio, oferta.fecha_fin].filter(Boolean).join(' a ') || '—'}</td>
+                    <td>{oferta.horario || '—'}</td>
+                    <td>{oferta.activa ? 'Activa' : 'Inactiva'}</td>
+                    <td><button onClick={() => cambiarEstadoOferta(oferta)} style={{ padding: '6px 9px', cursor: 'pointer' }}>{oferta.activa ? 'Desactivar' : 'Activar'}</button></td>
+                  </tr>
+                ))}{ofertasAcademicas.length === 0 && <tr><td colSpan="7" align="center">Todavía no hay ofertas registradas.</td></tr>}</tbody>
+              </table>
+            </div>
           </div>
         )}
 

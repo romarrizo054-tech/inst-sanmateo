@@ -72,7 +72,55 @@ const pool = mysql.createPool({
   connectionLimit: 10
 });
 
-pool.getConnection()
+const cursosIniciales = [
+  'Comunicación y TIC',
+  'Primeros Auxilios',
+  'Bacteriología y Prep. De Mater.',
+  'Organización y Gestión de las I.S.',
+  'Inmunología',
+  'Biología y Genética',
+  'Procedimientos Específicos',
+  'Inglés Técnico'
+];
+
+const ofertasSchemaReady = (async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ofertas_academicas (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      tipo VARCHAR(20) NOT NULL,
+      materia VARCHAR(255) NOT NULL,
+      anio_carrera VARCHAR(100) NULL,
+      fecha_inicio DATE NULL,
+      fecha_fin DATE NULL,
+      fecha_examen DATE NULL,
+      horario VARCHAR(80) NULL,
+      activa TINYINT(1) NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS inscripciones_ofertas (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      alumno_dni VARCHAR(30) NOT NULL,
+      oferta_id BIGINT NOT NULL,
+      fecha_inscripcion TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_alumno_oferta (alumno_dni, oferta_id),
+      KEY idx_oferta_id (oferta_id)
+    )
+  `);
+
+  const [rows] = await pool.query('SELECT COUNT(*) AS total FROM ofertas_academicas');
+  if (Number(rows[0].total) === 0) {
+    const values = cursosIniciales.map(materia => ['CURSO', materia, 'SEGUNDO AÑO']);
+    await pool.query(
+      'INSERT INTO ofertas_academicas (tipo, materia, anio_carrera) VALUES ?',
+      [values]
+    );
+  }
+})();
+
+ofertasSchemaReady
+  .then(() => pool.getConnection())
   .then(conn => {
     console.log('✅ Conectado exitosamente a la base de datos TiDB Cloud');
     conn.release();
@@ -240,6 +288,87 @@ app.patch('/api/alumnos/:dni/cuota', requiereSecretaria, async (req, res) => {
 // 2. ENDPOINTS DE INSCRIPCIÓN Y SECRETARÍA
 // ==========================================
 
+// Oferta visible para alumnos: solo cursos y mesas vigentes.
+app.get('/api/inscripcion/ofertas', async (_req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const [rows] = await pool.query(`
+      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario
+      FROM ofertas_academicas
+      WHERE activa = 1
+      ORDER BY tipo ASC, materia ASC, fecha_examen ASC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al consultar cursos y mesas:', error);
+    res.status(500).json({ error: 'No se pudo cargar la oferta académica' });
+  }
+});
+
+// Gestión de cursos y mesas: todas las operaciones requieren clave de secretaría.
+app.get('/api/secretaria/ofertas', requiereSecretaria, async (_req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const [rows] = await pool.query(`
+      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, activa
+      FROM ofertas_academicas
+      ORDER BY activa DESC, tipo ASC, materia ASC, fecha_examen ASC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al consultar la oferta académica:', error);
+    res.status(500).json({ error: 'No se pudo cargar la oferta académica' });
+  }
+});
+
+app.post('/api/secretaria/ofertas', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const { tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario } = req.body;
+    if (!['CURSO', 'MESA_EXAMEN'].includes(tipo) || !String(materia || '').trim()) {
+      return res.status(400).json({ error: 'Indica si es curso o mesa y el nombre de la materia/curso' });
+    }
+    if (tipo === 'MESA_EXAMEN' && !fecha_examen) {
+      return res.status(400).json({ error: 'La mesa de examen debe tener fecha' });
+    }
+    const [result] = await pool.query(`
+      INSERT INTO ofertas_academicas
+        (tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [
+      tipo,
+      String(materia).trim(),
+      anio_carrera || null,
+      fecha_inicio || null,
+      fecha_fin || null,
+      fecha_examen || null,
+      horario || null
+    ]);
+    res.status(201).json({ id: result.insertId, message: 'Oferta académica creada' });
+  } catch (error) {
+    console.error('Error al crear curso o mesa:', error);
+    res.status(500).json({ error: 'No se pudo guardar la oferta académica' });
+  }
+});
+
+app.patch('/api/secretaria/ofertas/:id/estado', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    if (typeof req.body.activa !== 'boolean') {
+      return res.status(400).json({ error: 'El estado debe ser activo o inactivo' });
+    }
+    const [result] = await pool.query(
+      'UPDATE ofertas_academicas SET activa = ? WHERE id = ?',
+      [req.body.activa ? 1 : 0, req.params.id]
+    );
+    if (!result.affectedRows) return res.status(404).json({ error: 'Oferta académica no encontrada' });
+    res.json({ message: 'Estado actualizado' });
+  } catch (error) {
+    console.error('Error al cambiar estado de la oferta:', error);
+    res.status(500).json({ error: 'No se pudo actualizar el estado' });
+  }
+});
+
 // Validar requisitos para el link de inscripción del alumno
 app.get('/api/inscripcion/validar/:dni', async (req, res) => {
   try {
@@ -264,12 +393,18 @@ app.get('/api/inscripcion/validar/:dni', async (req, res) => {
 
     const [reglasCorrelativas] = await pool.query('SELECT materia_objetivo, materia_requerida FROM correlativas');
     const [yaInscripto] = await pool.query('SELECT materia FROM inscripciones WHERE alumno_dni = ?', [dni]);
+    await ofertasSchemaReady;
+    const [ofertasInscriptas] = await pool.query(
+      'SELECT oferta_id FROM inscripciones_ofertas WHERE alumno_dni = ?',
+      [dni]
+    );
 
     res.json({
       alumno,
       materiasAprobadas,
       reglasCorrelativas,
-      materiasInscriptas: yaInscripto.map(i => i.materia)
+      materiasInscriptas: yaInscripto.map(i => i.materia),
+      ofertasInscriptas: ofertasInscriptas.map(i => Number(i.oferta_id))
     });
   } catch (error) {
     console.error('Error en validación de inscripción:', error);
@@ -277,17 +412,114 @@ app.get('/api/inscripcion/validar/:dni', async (req, res) => {
   }
 });
 
+// Inscribir a un alumno en cursos o mesas activas y validar condiciones en servidor.
+app.post('/api/inscripcion/confirmar-ofertas', async (req, res) => {
+  let connection;
+  try {
+    await ofertasSchemaReady;
+    const dni = String(req.body.dni || '').trim();
+    const ofertaIds = [...new Set((req.body.ofertaIds || []).map(Number).filter(Number.isInteger))];
+    if (!dni || ofertaIds.length === 0) {
+      return res.status(400).json({ error: 'Selecciona al menos un curso o una mesa' });
+    }
+
+    const [alumnos] = await pool.query('SELECT dni, cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado en el padrón' });
+    if (!alumnos[0].cuota_al_dia) return res.status(403).json({ error: 'Debe regularizar las cuotas antes de inscribirse' });
+
+    const [ofertas] = await pool.query(
+      `SELECT id, tipo, materia FROM ofertas_academicas WHERE activa = 1 AND id IN (?)`,
+      [ofertaIds]
+    );
+    if (ofertas.length !== ofertaIds.length) {
+      return res.status(400).json({ error: 'Una o más opciones ya no están disponibles' });
+    }
+
+    const [calificaciones] = await pool.query(
+      "SELECT materia FROM calificaciones WHERE alumno_dni = ? AND (nota_num >= 4 OR condicion IN ('P', 'R'))",
+      [dni]
+    );
+    const aprobadas = new Set(calificaciones.map(row => row.materia.trim().toLowerCase()));
+    const [correlativas] = await pool.query('SELECT materia_objetivo, materia_requerida FROM correlativas');
+
+    for (const oferta of ofertas) {
+      const materiaNormalizada = oferta.materia.trim().toLowerCase();
+      if (aprobadas.has(materiaNormalizada)) {
+        return res.status(409).json({ error: `Ya tienes aprobada ${oferta.materia}` });
+      }
+      if (oferta.tipo === 'CURSO') {
+        const faltante = correlativas.find(regla =>
+          regla.materia_objetivo.trim().toLowerCase() === materiaNormalizada &&
+          !aprobadas.has(regla.materia_requerida.trim().toLowerCase())
+        );
+        if (faltante) {
+          return res.status(403).json({ error: `Te falta la correlativa ${faltante.materia_requerida} para ${oferta.materia}` });
+        }
+      }
+    }
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    const values = ofertas.map(oferta => [dni, oferta.id]);
+    await connection.query(`
+      INSERT INTO inscripciones_ofertas (alumno_dni, oferta_id)
+      VALUES ?
+      ON DUPLICATE KEY UPDATE oferta_id = VALUES(oferta_id)
+    `, [values]);
+    await connection.commit();
+    res.status(201).json({ message: 'Inscripción registrada', ofertasInscriptas: ofertaIds });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Error al confirmar inscripción en cursos/mesas:', error);
+    res.status(500).json({ error: 'No se pudo confirmar la inscripción' });
+  } finally {
+    if (connection) connection.release();
+  }
+});
+
 // Confirmar materias elegidas por el alumno
 app.post('/api/inscripcion/confirmar', async (req, res) => {
-  const connection = await pool.getConnection();
+  let connection;
   try {
-    const { dni, materiasSeleccionadas } = req.body;
-    if (!dni || !materiasSeleccionadas || materiasSeleccionadas.length === 0) {
+    await ofertasSchemaReady;
+    const dni = String(req.body.dni || '').trim();
+    const materiasSeleccionadas = [...new Set((req.body.materiasSeleccionadas || []).map(m => String(m).trim()).filter(Boolean))];
+    if (!dni || materiasSeleccionadas.length === 0) {
       return res.status(400).json({ error: 'Debe seleccionar al menos una materia' });
     }
 
+    const [alumnos] = await pool.query('SELECT cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado en el padrón' });
+    if (!alumnos[0].cuota_al_dia) return res.status(403).json({ error: 'Debe regularizar las cuotas antes de inscribirse' });
+
+    const [ofertas] = await pool.query(
+      'SELECT materia FROM ofertas_academicas WHERE tipo = \'CURSO\' AND activa = 1 AND materia IN (?)',
+      [materiasSeleccionadas]
+    );
+    if (ofertas.length !== materiasSeleccionadas.length) {
+      return res.status(400).json({ error: 'Una o más materias ya no están disponibles para inscripción' });
+    }
+    const [calificaciones] = await pool.query(
+      "SELECT materia FROM calificaciones WHERE alumno_dni = ? AND (nota_num >= 4 OR condicion IN ('P', 'R'))",
+      [dni]
+    );
+    const aprobadas = new Set(calificaciones.map(row => row.materia.trim().toLowerCase()));
+    const [correlativas] = await pool.query('SELECT materia_objetivo, materia_requerida FROM correlativas');
+    for (const materia of materiasSeleccionadas) {
+      if (aprobadas.has(materia.toLowerCase())) {
+        return res.status(409).json({ error: `Ya tienes aprobada ${materia}` });
+      }
+      const faltante = correlativas.find(regla =>
+        regla.materia_objetivo.trim().toLowerCase() === materia.toLowerCase() &&
+        !aprobadas.has(regla.materia_requerida.trim().toLowerCase())
+      );
+      if (faltante) return res.status(403).json({ error: `Te falta la correlativa ${faltante.materia_requerida} para ${materia}` });
+    }
+
+    connection = await pool.getConnection();
+
     await connection.beginTransaction();
-    const values = materiasSeleccionadas.map(m => [dni.trim(), m]);
+    const values = materiasSeleccionadas.map(m => [dni, m]);
     await connection.query('INSERT INTO inscripciones (alumno_dni, materia) VALUES ?', [values]);
 
     await connection.commit();
@@ -304,16 +536,29 @@ app.post('/api/inscripcion/confirmar', async (req, res) => {
 // Ver padrón de inscriptos para el panel de secretaría
 app.get('/api/secretaria/inscriptos', requiereSecretaria, async (req, res) => {
   try {
+    await ofertasSchemaReady;
     const query = `
       SELECT 
-        i.id,
+        CONCAT('legacy-', i.id) AS id,
+        'CURSO' AS tipo,
         i.materia,
         i.fecha_inscripcion,
         a.dni,
         a.alumno
       FROM inscripciones i
       JOIN alumnos a ON i.alumno_dni = a.dni
-      ORDER BY i.materia ASC, a.alumno ASC
+      UNION ALL
+      SELECT
+        CONCAT('oferta-', io.id) AS id,
+        o.tipo,
+        CONCAT(o.materia, IF(o.fecha_examen IS NOT NULL, CONCAT(' - ', DATE_FORMAT(o.fecha_examen, '%d/%m/%Y')), '')) AS materia,
+        io.fecha_inscripcion,
+        a.dni,
+        a.alumno
+      FROM inscripciones_ofertas io
+      JOIN ofertas_academicas o ON o.id = io.oferta_id
+      JOIN alumnos a ON a.dni = io.alumno_dni
+      ORDER BY materia ASC, alumno ASC
     `;
     const [rows] = await pool.query(query);
     res.json(rows);

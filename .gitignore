@@ -1,0 +1,7 @@
+# Credentials and local database exports
+**/.env
+**/.env.*
+!**/.env.example
+**/*.sql
+**/*dump*
+**/*backup*
