@@ -1,0 +1,21 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #163654;
+  color: #1e293b;
+}
+
+/* Forzar que todos los campos y menús desplegables muestren texto oscuro legible */
+input, select, textarea {
+  color: #1e293b !important;
+  background-color: #ffffff !important;
+}
+
+select option {
+  color: #1e293b !important;
+  background-color: #ffffff !important;
+}

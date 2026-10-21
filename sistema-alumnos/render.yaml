@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: sistema-alumnos
+    runtime: node
+    plan: free
+    buildCommand: npm install --prefix backend && npm ci --prefix frontend && npm run build --prefix frontend
+    startCommand: npm start --prefix backend
+    healthCheckPath: /
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "4000"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: libro_matriz
