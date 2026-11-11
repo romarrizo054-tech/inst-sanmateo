@@ -45,6 +45,22 @@ function requiereSecretaria(req, res, next) {
   next();
 }
 
+function normalizarTextoAcademico(valor) {
+  return String(valor || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+
+function clasificarAnioAcademico(valor) {
+  const texto = normalizarTextoAcademico(valor).toUpperCase();
+  if (texto.includes('PRIMER') || /^1(?:ER|RO|O|°|º)?(?:\s|$)/.test(texto)) return 1;
+  if (texto.includes('SEGUNDO') || /^2(?:DO|DA|°|º)?(?:\s|$)/.test(texto)) return 2;
+  if (texto.includes('TERCER') || /^3(?:ER|RO|°|º)?(?:\s|$)/.test(texto)) return 3;
+  return null;
+}
+
+function nombreAnioAcademico(anio) {
+  return anio === 1 ? '1er Año' : anio === 2 ? '2do Año' : '3er Año';
+}
+
 app.post('/api/secretaria/auth', (req, res) => {
   if (!process.env.ADMIN_SECRET) {
     return res.status(503).json({ error: 'Acceso de secretaría no está configurado' });
@@ -262,6 +278,7 @@ ofertasSchemaReady
 app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
   let connection;
   try {
+    await ofertasSchemaReady;
     connection = await pool.getConnection();
     await connection.beginTransaction();
 
@@ -337,7 +354,7 @@ app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
     await connection.query('DELETE FROM calificaciones WHERE alumno_dni = ?', [dni.trim()]);
 
     const materiasValidas = (materias || []).filter(
-      m => m.nota_num !== '' && m.nota_num !== null && !isNaN(m.nota_num)
+      m => (m.nota_num !== '' && m.nota_num !== null && !isNaN(m.nota_num)) || ['P', 'R'].includes(String(m.condicion || '').trim().toUpperCase())
     );
 
     if (materiasValidas.length > 0) {
@@ -349,7 +366,7 @@ app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
         dni.trim(),
         m.anio_carrera,
         m.materia,
-        parseFloat(m.nota_num),
+        m.nota_num === '' || m.nota_num === null || m.nota_num === undefined ? null : parseFloat(m.nota_num),
         m.nota_letras || '',
         m.libro_acta || '',
         m.folio_acta || '',
@@ -359,8 +376,42 @@ app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
       await connection.query(queryNotas, [values]);
     }
 
+    let anioPromovido = null;
+    let nivelActual = clasificarAnioAcademico(anio_cursado);
+    if (nivelActual && nivelActual < 3) {
+      const [planEstudio] = await connection.query('SELECT materia, anio_carrera FROM materias_catalogo');
+      const [notasAprobadas] = await connection.query(`
+        SELECT materia, anio_carrera FROM calificaciones
+        WHERE alumno_dni = ? AND (nota_num >= 4 OR UPPER(condicion) IN ('P', 'R'))
+      `, [dni.trim()]);
+      const aprobadas = new Set(notasAprobadas.map(row =>
+        `${clasificarAnioAcademico(row.anio_carrera) || ''}:${normalizarTextoAcademico(row.materia)}`
+      ));
+      while (nivelActual < 3) {
+        let cumpleRequisitos = true;
+        for (let anioPrevio = 1; anioPrevio <= nivelActual; anioPrevio += 1) {
+          const materiasDelAnio = planEstudio
+            .filter(materia => clasificarAnioAcademico(materia.anio_carrera) === anioPrevio)
+            .map(materia => `${anioPrevio}:${normalizarTextoAcademico(materia.materia)}`);
+          if (!materiasDelAnio.length || !materiasDelAnio.every(materia => aprobadas.has(materia))) {
+            cumpleRequisitos = false;
+            break;
+          }
+        }
+        if (!cumpleRequisitos) break;
+        nivelActual += 1;
+        anioPromovido = nombreAnioAcademico(nivelActual);
+      }
+      if (anioPromovido) {
+        await connection.query('UPDATE alumnos SET anio_cursado = ? WHERE dni = ?', [anioPromovido, dni.trim()]);
+      }
+    }
+
     await connection.commit();
-    res.status(201).json({ message: 'Ficha guardada exitosamente' });
+    res.status(201).json({
+      message: anioPromovido ? `Ficha guardada. El alumno avanzó automáticamente a ${anioPromovido}.` : 'Ficha guardada exitosamente',
+      anio_cursado: anioPromovido || anio_cursado || null
+    });
   } catch (error) {
     if (connection) await connection.rollback();
     console.error('Error al guardar alumno:', error);

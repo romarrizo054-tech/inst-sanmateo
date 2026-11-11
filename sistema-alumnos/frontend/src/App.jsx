@@ -69,7 +69,7 @@ const OFERTA_INSCRIPCION = [
   'Inglés Técnico'
 ];
 
-function GestionAcademica() {
+function GestionAcademica({ onCerrarSesion }) {
   const [panelActivo, setPanelActivo] = useState('inscripcion'); // 'inscripcion' | 'inscriptos' | 'matriz'
 
 
@@ -670,8 +670,9 @@ function GestionAcademica() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...formMatriz, materias: materiasMatriz })
       });
-      if (!res.ok) throw new Error('Error al guardar ficha');
-      alert(modoEdicion ? '¡Ficha actualizada con éxito!' : '¡Ficha guardada con éxito!');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error al guardar ficha');
+      alert(data.message || (modoEdicion ? '¡Ficha actualizada con éxito!' : '¡Ficha guardada con éxito!'));
       setSubTabMatriz('buscar');
       setModoEdicion(false);
       setDniBusquedaMatriz(formMatriz.dni);
@@ -744,8 +745,9 @@ function GestionAcademica() {
         alignItems: 'center',
         boxShadow: '0 4px 15px rgba(0,0,0,0.25)'
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
-          <div style={{
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, width: '100%', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+            <div style={{
             width: '46px',
             height: '46px',
             borderRadius: '50%',
@@ -757,7 +759,7 @@ function GestionAcademica() {
             overflow: 'hidden',
             border: '2px solid #a8c5da',
             flexShrink: 0
-          }}>
+            }}>
             <img
               src="/logo.png"
               alt="Logo IFTS San Mateo"
@@ -768,19 +770,21 @@ function GestionAcademica() {
               style={{ width: '100%', height: '100%', objectFit: 'contain' }}
             />
             <span style={{ display: 'none', color: '#163654', fontWeight: 'bold' }}>SM</span>
-          </div>
-          <div>
-            <div style={{ color: '#cbdfe9', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-              IFTS San Mateo • Catamarca
             </div>
-            <div style={{ color: '#ffffff', fontSize: '18px', fontWeight: 'bold' }}>
-              Gestión Académica
+            <div>
+              <div style={{ color: '#cbdfe9', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                IFTS San Mateo • Catamarca
+              </div>
+              <div style={{ color: '#ffffff', fontSize: '18px', fontWeight: 'bold' }}>
+                Gestión Académica
+              </div>
             </div>
           </div>
+          <button type="button" onClick={onCerrarSesion} style={{ padding: '8px 12px', borderRadius: 6, border: 0, cursor: 'pointer', whiteSpace: 'nowrap' }}>Cerrar sesión</button>
         </div>
 
         {/* SELECTOR DE PANELES */}
-        <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '10px', marginTop: '12px', width: '100%' }}>
           <button
             onClick={() => setPanelActivo('inscripcion')}
             style={{
@@ -1764,6 +1768,7 @@ function GestionAcademica() {
                 <h4 style={{ color: '#163654', borderBottom: '2px solid #e2e8f0', paddingBottom: '6px', marginBottom: '15px' }}>
                   Calificaciones y Actas Registradas
                 </h4>
+                <p style={{ color: '#475569', marginTop: -8 }}>Al guardar la ficha, el sistema avanza automáticamente al año siguiente cuando todas las materias de los años previos del catálogo están aprobadas (nota 4 o más, o condición P/R).</p>
 
                 <table border="1" cellPadding="4" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#cbd5e1' }}>
                   <thead style={{ background: '#f1f5f9' }}>
@@ -1902,14 +1907,5 @@ export default function App() {
   if (!rutaSecretaria) return <AlumnoInscripcion />;
   if (!adminKey) return <AccesoSecretaria onAuthenticated={() => setAdminKey(sessionStorage.getItem(ADMIN_KEY_STORAGE))} />;
 
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => { sessionStorage.removeItem(ADMIN_KEY_STORAGE); setAdminKey(null); }}
-        style={{ position: 'fixed', zIndex: 10, top: 12, right: 12, padding: '8px 12px', borderRadius: 6, border: 0, cursor: 'pointer' }}
-      >Cerrar sesión</button>
-      <GestionAcademica />
-    </>
-  );
+  return <GestionAcademica onCerrarSesion={() => { sessionStorage.removeItem(ADMIN_KEY_STORAGE); setAdminKey(null); }} />;
 }
