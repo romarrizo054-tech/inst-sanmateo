@@ -113,6 +113,10 @@ function GestionAcademica() {
   // ================= ESTADOS: SECRETARÍA - LIBRO MATRIZ =================
   const [subTabMatriz, setSubTabMatriz] = useState('buscar'); // 'buscar' | 'cargar' | 'listado'
   const [alumnosMatriz, setAlumnosMatriz] = useState([]);
+  const [paginaAlumnosMatriz, setPaginaAlumnosMatriz] = useState(1);
+  const [totalAlumnosMatriz, setTotalAlumnosMatriz] = useState(0);
+  const [cargandoAlumnosMatriz, setCargandoAlumnosMatriz] = useState(false);
+  const alumnosMatrizPorPagina = 50;
   const [dniBusquedaMatriz, setDniBusquedaMatriz] = useState('');
   const [alumnoMatriz, setAlumnoMatriz] = useState(null);
   const [errorMatriz, setErrorMatriz] = useState('');
@@ -164,14 +168,20 @@ function GestionAcademica() {
     }
   };
 
-  const cargarAlumnosMatriz = async () => {
+  const cargarAlumnosMatriz = async (pagina = paginaAlumnosMatriz) => {
+    setCargandoAlumnosMatriz(true);
     try {
-      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos`);
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos?pagina=${pagina}&porPagina=${alumnosMatrizPorPagina}`);
       if (!res.ok) throw new Error('No se pudo cargar el padrón del Libro Matriz');
-      setAlumnosMatriz(await res.json());
+      const data = await res.json();
+      setAlumnosMatriz(data.alumnos || []);
+      setPaginaAlumnosMatriz(data.pagina || pagina);
+      setTotalAlumnosMatriz(data.total || 0);
     } catch (err) {
       console.error('Error al cargar alumnos del Libro Matriz:', err);
       setAlumnosMatriz([]);
+    } finally {
+      setCargandoAlumnosMatriz(false);
     }
   };
 
@@ -643,7 +653,7 @@ function GestionAcademica() {
       const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos/${alumno.dni}`, { method: 'DELETE' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo eliminar el alumno');
-      setAlumnosMatriz(current => current.filter(item => item.dni !== alumno.dni));
+      await cargarAlumnosMatriz();
       if (alumnoMatriz?.dni === alumno.dni) setAlumnoMatriz(null);
     } catch (err) {
       setErrorMatriz(err.message);
@@ -1317,8 +1327,9 @@ function GestionAcademica() {
               </button>
               <button
                 onClick={() => {
+                  setPaginaAlumnosMatriz(1);
                   setSubTabMatriz('listado');
-                  cargarAlumnosMatriz();
+                  cargarAlumnosMatriz(1);
                 }}
                 style={{
                   padding: '8px 16px',
@@ -1371,11 +1382,12 @@ function GestionAcademica() {
             {subTabMatriz === 'listado' ? (
               <section>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
-                  <h3 style={{ margin: 0, color: '#163654' }}>Alumnos cargados en el Libro Matriz ({alumnosMatriz.length})</h3>
+                  <h3 style={{ margin: 0, color: '#163654' }}>Alumnos cargados en el Libro Matriz ({totalAlumnosMatriz})</h3>
                   <button
-                    onClick={cargarAlumnosMatriz}
+                    onClick={() => cargarAlumnosMatriz()}
+                    disabled={cargandoAlumnosMatriz}
                     style={{ padding: '8px 14px', background: '#204c73', color: '#fff', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
-                    🔄 Actualizar Padrón
+                    {cargandoAlumnosMatriz ? 'Cargando…' : '🔄 Actualizar Padrón'}
                   </button>
                 </div>
                 {errorMatriz && <p role="alert" style={{ color: '#b91c1c' }}>{errorMatriz}</p>}
@@ -1436,6 +1448,13 @@ function GestionAcademica() {
                     )}
                   </tbody>
                 </table>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginTop: 14 }}>
+                  <span style={{ color: '#475569' }}>Página {paginaAlumnosMatriz} de {Math.max(1, Math.ceil(totalAlumnosMatriz / alumnosMatrizPorPagina))} · mostrando {alumnosMatriz.length} de {totalAlumnosMatriz}</span>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button type="button" onClick={() => cargarAlumnosMatriz(paginaAlumnosMatriz - 1)} disabled={cargandoAlumnosMatriz || paginaAlumnosMatriz <= 1} style={{ padding: '8px 12px' }}>Anterior</button>
+                    <button type="button" onClick={() => cargarAlumnosMatriz(paginaAlumnosMatriz + 1)} disabled={cargandoAlumnosMatriz || paginaAlumnosMatriz >= Math.ceil(totalAlumnosMatriz / alumnosMatrizPorPagina)} style={{ padding: '8px 12px' }}>Siguiente</button>
+                  </div>
                 </div>
               </section>
             ) : subTabMatriz === 'buscar' ? (

@@ -948,14 +948,20 @@ app.get('/api/secretaria/inscriptos', requiereSecretaria, async (req, res) => {
 app.get('/api/secretaria/alumnos', requiereSecretaria, async (req, res) => {
   try {
     await ofertasSchemaReady;
+    const paginaSolicitada = Math.max(1, Number.parseInt(req.query.pagina, 10) || 1);
+    const porPagina = Math.min(100, Math.max(1, Number.parseInt(req.query.porPagina, 10) || 50));
+    const [[{ total }]] = await pool.query('SELECT COUNT(*) AS total FROM alumnos');
+    const pagina = Math.min(paginaSolicitada, Math.max(1, Math.ceil(Number(total) / porPagina)));
+    const offset = (pagina - 1) * porPagina;
     const [rows] = await pool.query(`
-      SELECT a.dni, a.alumno, a.carrera, a.turno, a.anio_cursado, a.cuota_al_dia,
-        IF(b.dni IS NULL, 0, 1) AS dado_de_baja
-      FROM alumnos a
-      LEFT JOIN alumnos_bajas b ON b.dni = a.dni
-      ORDER BY alumno ASC
-    `);
-    res.json(rows);
+        SELECT a.dni, a.alumno, a.carrera, a.turno, a.anio_cursado, a.cuota_al_dia,
+          IF(b.dni IS NULL, 0, 1) AS dado_de_baja
+        FROM alumnos a
+        LEFT JOIN alumnos_bajas b ON b.dni = a.dni
+        ORDER BY a.alumno ASC
+        LIMIT ? OFFSET ?
+      `, [porPagina, offset]);
+    res.json({ alumnos: rows, total: Number(total), pagina, porPagina });
   } catch (error) {
     console.error('Error al consultar alumnos:', error);
     res.status(500).json({ error: error.message });
