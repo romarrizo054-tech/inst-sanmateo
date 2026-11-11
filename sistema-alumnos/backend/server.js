@@ -61,6 +61,21 @@ function nombreAnioAcademico(anio) {
   return anio === 1 ? '1er Año' : anio === 2 ? '2do Año' : '3er Año';
 }
 
+function desplazarFechaAMes(fecha, mesOrigen, mesDestino) {
+  if (!fecha) return null;
+  const fechaISO = fecha instanceof Date ? fecha.toISOString().slice(0, 10) : String(fecha).slice(0, 10);
+  const diaOriginal = Number(fechaISO.slice(8, 10));
+  const [anioFecha, mesFecha] = fechaISO.slice(0, 7).split('-').map(Number);
+  const [anioOrigen, mesOrigenNumero] = mesOrigen.split('-').map(Number);
+  const [anioDestino, mesDestinoNumero] = mesDestino.split('-').map(Number);
+  const diferenciaMeses = (anioDestino - anioOrigen) * 12 + mesDestinoNumero - mesOrigenNumero;
+  const indiceMes = anioFecha * 12 + mesFecha - 1 + diferenciaMeses;
+  const anio = Math.floor(indiceMes / 12);
+  const mes = (indiceMes % 12) + 1;
+  const ultimoDia = new Date(Date.UTC(anio, mes, 0)).getUTCDate();
+  return `${anio}-${String(mes).padStart(2, '0')}-${String(Math.min(diaOriginal, ultimoDia)).padStart(2, '0')}`;
+}
+
 app.post('/api/secretaria/auth', (req, res) => {
   if (!process.env.ADMIN_SECRET) {
     return res.status(503).json({ error: 'Acceso de secretaría no está configurado' });
@@ -131,10 +146,18 @@ const ofertasSchemaReady = (async () => {
       fecha_fin DATE NULL,
       fecha_examen DATE NULL,
       horario VARCHAR(80) NULL,
+      profesor VARCHAR(180) NULL,
       activa TINYINT(1) NOT NULL DEFAULT 1,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
   `);
+  const [columnaProfesor] = await pool.query(`
+    SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ofertas_academicas' AND COLUMN_NAME = 'profesor'
+  `);
+  if (!columnaProfesor.length) {
+    await pool.query('ALTER TABLE ofertas_academicas ADD COLUMN profesor VARCHAR(180) NULL');
+  }
   await pool.query(`
     CREATE TABLE IF NOT EXISTS inscripciones_ofertas (
       id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
@@ -526,7 +549,7 @@ app.get('/api/inscripcion/ofertas', async (_req, res) => {
   try {
     await ofertasSchemaReady;
     const [rows] = await pool.query(`
-      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario
+      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor
       FROM ofertas_academicas
       WHERE activa = 1
       ORDER BY tipo ASC, materia ASC, fecha_examen ASC
@@ -543,7 +566,7 @@ app.get('/api/secretaria/ofertas', requiereSecretaria, async (_req, res) => {
   try {
     await ofertasSchemaReady;
     const [rows] = await pool.query(`
-      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, activa
+      SELECT id, tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor, activa
       FROM ofertas_academicas
       ORDER BY activa DESC, tipo ASC, materia ASC, fecha_examen ASC
     `);
@@ -557,7 +580,7 @@ app.get('/api/secretaria/ofertas', requiereSecretaria, async (_req, res) => {
 app.post('/api/secretaria/ofertas', requiereSecretaria, async (req, res) => {
   try {
     await ofertasSchemaReady;
-    const { tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario } = req.body;
+    const { tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor } = req.body;
     if (!['CURSO', 'MESA_EXAMEN'].includes(tipo) || !String(materia || '').trim()) {
       return res.status(400).json({ error: 'Indica si es curso o mesa y el nombre de la materia/curso' });
     }
@@ -566,8 +589,8 @@ app.post('/api/secretaria/ofertas', requiereSecretaria, async (req, res) => {
     }
     const [result] = await pool.query(`
       INSERT INTO ofertas_academicas
-        (tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+        (tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       tipo,
       String(materia).trim(),
@@ -575,12 +598,78 @@ app.post('/api/secretaria/ofertas', requiereSecretaria, async (req, res) => {
       fecha_inicio || null,
       fecha_fin || null,
       fecha_examen || null,
-      horario || null
+      horario || null,
+      String(profesor || '').trim() || null
     ]);
     res.status(201).json({ id: result.insertId, message: 'Oferta académica creada' });
   } catch (error) {
     console.error('Error al crear curso o mesa:', error);
     res.status(500).json({ error: 'No se pudo guardar la oferta académica' });
+  }
+});
+
+app.post('/api/secretaria/ofertas/reciclar-mes', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const mesOrigen = String(req.body.mesOrigen || '').trim();
+    const mesDestino = String(req.body.mesDestino || '').trim();
+    const formatoMes = /^\d{4}-(0[1-9]|1[0-2])$/;
+    if (!formatoMes.test(mesOrigen) || !formatoMes.test(mesDestino)) {
+      return res.status(400).json({ error: 'Selecciona los meses de origen y destino' });
+    }
+    if (mesOrigen === mesDestino) return res.status(400).json({ error: 'El mes de destino debe ser diferente del mes de origen' });
+
+    const [ofertas] = await pool.query(`
+      SELECT tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor
+      FROM ofertas_academicas
+      WHERE (tipo = 'MESA_EXAMEN' AND DATE_FORMAT(fecha_examen, '%Y-%m') = ?)
+         OR (tipo = 'CURSO' AND (
+              DATE_FORMAT(fecha_inicio, '%Y-%m') = ? OR DATE_FORMAT(fecha_fin, '%Y-%m') = ?
+         ))
+      ORDER BY COALESCE(fecha_examen, fecha_inicio, fecha_fin), materia
+    `, [mesOrigen, mesOrigen, mesOrigen]);
+
+    let creadas = 0;
+    for (const oferta of ofertas) {
+      const fechas = oferta.tipo === 'MESA_EXAMEN'
+        ? { fechaInicio: null, fechaFin: null, fechaExamen: desplazarFechaAMes(oferta.fecha_examen, mesOrigen, mesDestino) }
+        : {
+            fechaInicio: desplazarFechaAMes(oferta.fecha_inicio, mesOrigen, mesDestino),
+            fechaFin: desplazarFechaAMes(oferta.fecha_fin, mesOrigen, mesDestino),
+            fechaExamen: null
+          };
+      const parametros = [
+        oferta.tipo, oferta.materia, oferta.anio_carrera || null,
+        fechas.fechaInicio, fechas.fechaFin, fechas.fechaExamen,
+        oferta.horario || null, oferta.profesor || null
+      ];
+      const [duplicadas] = await pool.query(`
+        SELECT id FROM ofertas_academicas
+        WHERE tipo = ? AND materia = ? AND anio_carrera <=> ?
+          AND fecha_inicio <=> ? AND fecha_fin <=> ? AND fecha_examen <=> ?
+          AND horario <=> ? AND profesor <=> ?
+        LIMIT 1
+      `, parametros);
+      if (duplicadas.length) continue;
+      await pool.query(`
+        INSERT INTO ofertas_academicas
+          (tipo, materia, anio_carrera, fecha_inicio, fecha_fin, fecha_examen, horario, profesor, activa)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `, parametros);
+      creadas += 1;
+    }
+    res.json({
+      creadas,
+      encontradas: ofertas.length,
+      message: creadas
+        ? `Se copiaron ${creadas} fechas al mes ${mesDestino}. Los alumnos deberán inscribirse a las nuevas ofertas.`
+        : ofertas.length
+          ? 'Las fechas del mes destino ya estaban cargadas.'
+          : 'No se encontraron fechas para reciclar en el mes elegido.'
+    });
+  } catch (error) {
+    console.error('Error al reciclar fechas de ofertas:', error);
+    res.status(500).json({ error: 'No se pudieron copiar las fechas al otro mes' });
   }
 });
 
@@ -725,6 +814,33 @@ app.put('/api/secretaria/cuotas/periodos/:periodo', requiereSecretaria, async (r
   }
 });
 
+app.get('/api/secretaria/alumnos/buscar', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const busqueda = String(req.query.q || '').trim();
+    if (busqueda.length < 2) return res.status(400).json({ error: 'Escribe al menos 2 caracteres para buscar' });
+    const termino = `%${busqueda}%`;
+    const [rows] = await pool.query(`
+      SELECT a.dni, a.alumno, a.carrera, a.cuota_al_dia,
+        p.periodo AS ultimo_periodo, p.importe AS ultimo_importe,
+        p.fecha_pago AS ultima_fecha_pago, p.medio AS ultimo_medio
+      FROM alumnos a
+      LEFT JOIN pagos_cuotas p ON p.id = (
+        SELECT p2.id FROM pagos_cuotas p2
+        WHERE p2.alumno_dni = a.dni
+        ORDER BY p2.fecha_pago DESC, p2.id DESC LIMIT 1
+      )
+      WHERE a.dni LIKE ? OR a.alumno LIKE ?
+      ORDER BY a.alumno ASC
+      LIMIT 20
+    `, [termino, termino]);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al buscar alumnos para pago:', error);
+    res.status(500).json({ error: 'No se pudo buscar alumnos' });
+  }
+});
+
 app.get('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) => {
   try {
     await ofertasSchemaReady;
@@ -772,7 +888,7 @@ app.post('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) =>
       return res.status(400).json({ error: 'Ingresa una fecha de pago válida' });
     }
 
-    const [alumnos] = await pool.query('SELECT dni FROM alumnos WHERE dni = ?', [dni]);
+    const [alumnos] = await pool.query('SELECT dni, alumno FROM alumnos WHERE dni = ?', [dni]);
     if (!alumnos.length) return res.status(404).json({ error: 'No se encontró un alumno con ese DNI' });
 
     const [result] = await pool.query(`
@@ -781,7 +897,15 @@ app.post('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) =>
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `, [dni, periodo, importe, medio, fechaPago, referencia || null, observaciones || null]);
     const cuotaAlDia = await actualizarEstadoCuota(dni);
-    res.status(201).json({ id: result.insertId, message: 'Pago registrado', cuota_al_dia: cuotaAlDia });
+    res.status(201).json({
+      id: result.insertId,
+      message: 'Pago registrado',
+      cuota_al_dia: cuotaAlDia,
+      pago: {
+        dni, alumno: alumnos[0].alumno, periodo, importe, medio, fecha_pago: fechaPago,
+        referencia: referencia || null, observaciones: observaciones || null
+      }
+    });
   } catch (error) {
     console.error('Error al registrar pago de cuota:', error);
     res.status(500).json({ error: 'No se pudo registrar el pago' });
@@ -971,17 +1095,43 @@ app.get('/api/secretaria/inscriptos', requiereSecretaria, async (req, res) => {
         i.materia,
         i.fecha_inscripcion,
         a.dni,
-        a.alumno
+        a.alumno,
+        a.domicilio,
+        a.genero,
+        a.fecha_nacimiento,
+        a.edad,
+        a.carrera,
+        a.turno,
+        a.anio_cursado,
+        a.cuota_al_dia,
+        NULL AS fecha_inicio,
+        NULL AS fecha_fin,
+        NULL AS fecha_examen,
+        NULL AS horario,
+        NULL AS profesor
       FROM inscripciones i
       JOIN alumnos a ON i.alumno_dni = a.dni
       UNION ALL
       SELECT
         CONCAT('oferta-', io.id) AS id,
         o.tipo,
-        CONCAT(o.materia, IF(o.fecha_examen IS NOT NULL, CONCAT(' - ', DATE_FORMAT(o.fecha_examen, '%d/%m/%Y')), '')) AS materia,
+        o.materia,
         io.fecha_inscripcion,
         a.dni,
-        a.alumno
+        a.alumno,
+        a.domicilio,
+        a.genero,
+        a.fecha_nacimiento,
+        a.edad,
+        a.carrera,
+        a.turno,
+        a.anio_cursado,
+        a.cuota_al_dia,
+        o.fecha_inicio,
+        o.fecha_fin,
+        o.fecha_examen,
+        o.horario,
+        o.profesor
       FROM inscripciones_ofertas io
       JOIN ofertas_academicas o ON o.id = io.oferta_id
       JOIN alumnos a ON a.dni = io.alumno_dni

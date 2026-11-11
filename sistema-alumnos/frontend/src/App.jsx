@@ -8,6 +8,7 @@ const fechaLocalISO = () => {
   const fecha = new Date();
   return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-${String(fecha.getDate()).padStart(2, '0')}`;
 };
+const fechaSQLTexto = valor => !valor ? '' : valor instanceof Date ? valor.toISOString().slice(0, 10) : String(valor).slice(0, 10);
 
 function adminFetch(url, options = {}) {
   return fetch(url, {
@@ -88,8 +89,12 @@ function GestionAcademica({ onCerrarSesion }) {
   const [errorOferta, setErrorOferta] = useState('');
   const [guardandoOferta, setGuardandoOferta] = useState(false);
   const [formOferta, setFormOferta] = useState({
-    tipo: 'CURSO', materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: ''
+    tipo: 'CURSO', materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: '', profesor: ''
   });
+  const [mesOrigenReciclar, setMesOrigenReciclar] = useState(() => fechaLocalISO().slice(0, 7));
+  const [mesDestinoReciclar, setMesDestinoReciclar] = useState('');
+  const [reciclandoFechas, setReciclandoFechas] = useState(false);
+  const [mensajeReciclaje, setMensajeReciclaje] = useState('');
   const [materiasCatalogo, setMateriasCatalogo] = useState([]);
   const [formMateria, setFormMateria] = useState({ materia: '', anio_carrera: 'PRIMER AÑO' });
   const [materiaEditando, setMateriaEditando] = useState(null);
@@ -100,6 +105,11 @@ function GestionAcademica({ onCerrarSesion }) {
   const [errorPago, setErrorPago] = useState('');
   const [mensajePago, setMensajePago] = useState('');
   const [guardandoPago, setGuardandoPago] = useState(false);
+  const [busquedaAlumnoPago, setBusquedaAlumnoPago] = useState('');
+  const [resultadosAlumnosPago, setResultadosAlumnosPago] = useState([]);
+  const [buscandoAlumnosPago, setBuscandoAlumnosPago] = useState(false);
+  const [alumnoSeleccionadoPago, setAlumnoSeleccionadoPago] = useState(null);
+  const [reciboPago, setReciboPago] = useState(null);
   const [inicioControlCuotas, setInicioControlCuotas] = useState('');
   const [periodoTarifa, setPeriodoTarifa] = useState(() => fechaLocalISO().slice(0, 7));
   const [importeTarifa, setImporteTarifa] = useState('');
@@ -224,6 +234,32 @@ function GestionAcademica({ onCerrarSesion }) {
     }
   };
 
+  const buscarAlumnosParaPago = async (event) => {
+    event.preventDefault();
+    setErrorPago('');
+    setBuscandoAlumnosPago(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos/buscar?q=${encodeURIComponent(busquedaAlumnoPago.trim())}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo buscar alumnos');
+      setResultadosAlumnosPago(data);
+      if (data.length === 0) setErrorPago('No se encontraron alumnos con ese DNI o nombre.');
+    } catch (err) {
+      setErrorPago(err.message);
+      setResultadosAlumnosPago([]);
+    } finally {
+      setBuscandoAlumnosPago(false);
+    }
+  };
+
+  const seleccionarAlumnoParaPago = (alumno) => {
+    setAlumnoSeleccionadoPago(alumno);
+    setFormPago(current => ({ ...current, dni: alumno.dni }));
+    setResultadosAlumnosPago([]);
+    setErrorPago('');
+    setReciboPago(null);
+  };
+
   const cargarConfiguracionCuotas = async () => {
     try {
       const res = await adminFetch(`${API_BASE}/api/secretaria/cuotas/configuracion`);
@@ -292,7 +328,15 @@ function GestionAcademica({ onCerrarSesion }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo registrar el pago');
-      setFormPago({ ...formPago, dni: '', importe: '', referencia: '', observaciones: '' });
+      setReciboPago({ ...data.pago, id: data.id });
+      setAlumnoSeleccionadoPago(current => current ? {
+        ...current,
+        ultimo_periodo: data.pago.periodo,
+        ultimo_importe: data.pago.importe,
+        ultima_fecha_pago: data.pago.fecha_pago,
+        ultimo_medio: data.pago.medio
+      } : current);
+      setFormPago({ ...formPago, dni: alumnoSeleccionadoPago?.dni || '', importe: '', referencia: '', observaciones: '' });
       setMensajePago(data.cuota_al_dia === 1
         ? 'Pago registrado. El alumno quedó al día.'
         : data.cuota_al_dia === 0
@@ -392,7 +436,7 @@ function GestionAcademica({ onCerrarSesion }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo guardar la oferta');
-      setFormOferta({ tipo: formOferta.tipo, materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: '' });
+      setFormOferta({ tipo: formOferta.tipo, materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: '', profesor: '' });
       await cargarOfertasAcademicas();
     } catch (err) {
       setErrorOferta(err.message);
@@ -413,6 +457,32 @@ function GestionAcademica({ onCerrarSesion }) {
       await cargarOfertasAcademicas();
     } catch (err) {
       setErrorOferta(err.message);
+    }
+  };
+
+  const reciclarFechasDeMes = async (event) => {
+    event.preventDefault();
+    setErrorOferta('');
+    setMensajeReciclaje('');
+    if (!mesOrigenReciclar || !mesDestinoReciclar || mesOrigenReciclar === mesDestinoReciclar) {
+      setErrorOferta('Selecciona dos meses distintos para copiar las fechas.');
+      return;
+    }
+    if (!window.confirm(`¿Copiar las fechas, materias, horarios y profesores de ${mesOrigenReciclar} a ${mesDestinoReciclar}? Los alumnos no se reinscribirán automáticamente.`)) return;
+    setReciclandoFechas(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/ofertas/reciclar-mes`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mesOrigen: mesOrigenReciclar, mesDestino: mesDestinoReciclar })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudieron copiar las fechas');
+      setMensajeReciclaje(data.message);
+      await cargarOfertasAcademicas();
+    } catch (err) {
+      setErrorOferta(err.message);
+    } finally {
+      setReciclandoFechas(false);
     }
   };
 
@@ -714,12 +784,25 @@ function GestionAcademica({ onCerrarSesion }) {
       Materia: item.materia,
       DNI: item.dni,
       Alumno: item.alumno,
-      Fecha: item.fecha_inscripcion
-        ? new Date(item.fecha_inscripcion).toLocaleDateString()
+      Domicilio: item.domicilio || '',
+      Género: item.genero || '',
+      'Fecha de nacimiento': fechaSQLTexto(item.fecha_nacimiento),
+      Edad: item.edad ?? '',
+      Carrera: item.carrera || '',
+      Turno: item.turno || '',
+      'Año cursado': item.anio_cursado || '',
+      'Estado de cuota': item.cuota_al_dia ? 'Al día' : 'Con deuda',
+      'Fecha de inicio': fechaSQLTexto(item.fecha_inicio),
+      'Fecha de finalización': fechaSQLTexto(item.fecha_fin),
+      'Fecha de examen': fechaSQLTexto(item.fecha_examen),
+      Horario: item.horario || '',
+      Profesor: item.profesor || '',
+      'Fecha de inscripción': item.fecha_inscripcion
+        ? new Date(item.fecha_inscripcion).toLocaleString('es-AR')
         : ''
     }));
     const hoja = XLSX.utils.json_to_sheet(filas, {
-      header: ['Tipo', 'Materia', 'DNI', 'Alumno', 'Fecha']
+      header: ['Tipo', 'Materia', 'DNI', 'Alumno', 'Domicilio', 'Género', 'Fecha de nacimiento', 'Edad', 'Carrera', 'Turno', 'Año cursado', 'Estado de cuota', 'Fecha de inicio', 'Fecha de finalización', 'Fecha de examen', 'Horario', 'Profesor', 'Fecha de inscripción']
     });
     const libro = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(libro, hoja, 'Inscriptos');
@@ -1075,7 +1158,10 @@ function GestionAcademica({ onCerrarSesion }) {
                   <th>Materia</th>
                   <th>D.N.I.</th>
                   <th>Estudiante</th>
-                  <th>Fecha</th>
+                  <th>Fecha de actividad</th>
+                  <th>Horario</th>
+                  <th>Profesor</th>
+                  <th>Fecha de inscripción</th>
                 </tr>
               </thead>
               <tbody>
@@ -1086,12 +1172,15 @@ function GestionAcademica({ onCerrarSesion }) {
                       <td><strong style={{ color: '#204c73' }}>{item.materia}</strong></td>
                       <td>{item.dni}</td>
                       <td>{item.alumno}</td>
-                      <td>{item.fecha_inscripcion ? new Date(item.fecha_inscripcion).toLocaleDateString() : '-'}</td>
+                      <td>{item.fecha_examen ? fechaSQLTexto(item.fecha_examen) : [item.fecha_inicio, item.fecha_fin].filter(Boolean).map(fechaSQLTexto).join(' a ') || '—'}</td>
+                      <td>{item.horario || '—'}</td>
+                      <td>{item.profesor || '—'}</td>
+                      <td>{item.fecha_inscripcion ? new Date(item.fecha_inscripcion).toLocaleString('es-AR') : '—'}</td>
                     </tr>
                   ))
                 ) : (
                   <tr>
-                    <td colSpan="5" align="center" style={{ padding: '20px', color: '#64748b' }}>
+                    <td colSpan="8" align="center" style={{ padding: '20px', color: '#64748b' }}>
                       No hay inscripciones registradas para esta materia.
                     </td>
                   </tr>
@@ -1105,6 +1194,21 @@ function GestionAcademica({ onCerrarSesion }) {
           <div style={{ background: '#ffffff', borderRadius: '16px', padding: '25px', boxShadow: '0 20px 40px rgba(15, 34, 53, 0.3)' }}>
             <h2 style={{ marginTop: 0, color: '#163654' }}>Administrar cursos y mesas de examen</h2>
             <p style={{ color: '#475569' }}>Las ofertas activas aparecerán en el panel del alumno. Las ofertas inactivas se conservan junto a sus inscripciones anteriores.</p>
+
+            <section style={{ padding: 16, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 20 }}>
+              <h3 style={{ margin: '0 0 8px', color: '#163654' }}>Reutilizar fechas de otro mes</h3>
+              <p style={{ margin: '0 0 12px', color: '#475569' }}>Copia cursos y mesas con sus fechas desplazadas al mes destino; conserva materia, horario y profesor. Los alumnos deben inscribirse a las nuevas fechas.</p>
+              <form onSubmit={reciclarFechasDeMes} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: 12 }}>
+                <label style={{ display: 'grid', gap: 5 }}>Copiar desde
+                  <input required type="month" value={mesOrigenReciclar} onChange={e => setMesOrigenReciclar(e.target.value)} style={{ padding: 9 }} />
+                </label>
+                <label style={{ display: 'grid', gap: 5 }}>Usar en el mes
+                  <input required type="month" value={mesDestinoReciclar} onChange={e => setMesDestinoReciclar(e.target.value)} style={{ padding: 9 }} />
+                </label>
+                <button type="submit" disabled={reciclandoFechas} style={{ padding: '10px 14px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{reciclandoFechas ? 'Copiando…' : 'Copiar fechas al otro mes'}</button>
+              </form>
+              {mensajeReciclaje && <p role="status" style={{ color: '#166534', marginBottom: 0 }}>{mensajeReciclaje}</p>}
+            </section>
 
             <form onSubmit={guardarOfertaAcademica} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22 }}>
               <label style={{ display: 'grid', gap: 5 }}>Tipo
@@ -1132,6 +1236,9 @@ function GestionAcademica({ onCerrarSesion }) {
               <label style={{ display: 'grid', gap: 5 }}>Horario (opcional)
                 <input value={formOferta.horario} onChange={e => setFormOferta({ ...formOferta, horario: e.target.value })} placeholder="Ej.: 18:00" style={{ padding: 9 }} />
               </label>
+              <label style={{ display: 'grid', gap: 5 }}>Profesor (opcional)
+                <input maxLength="180" value={formOferta.profesor} onChange={e => setFormOferta({ ...formOferta, profesor: e.target.value })} placeholder="Nombre del profesor" style={{ padding: 9 }} />
+              </label>
               <button type="submit" disabled={guardandoOferta} style={{ alignSelf: 'end', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoOferta ? 'Guardando…' : 'Agregar oferta'}</button>
             </form>
 
@@ -1142,7 +1249,7 @@ function GestionAcademica({ onCerrarSesion }) {
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
-                <thead style={{ background: '#f1f5f9' }}><tr><th>Tipo</th><th>Materia/curso</th><th>Año</th><th>Fechas</th><th>Horario</th><th>Estado</th><th>Acción</th></tr></thead>
+                <thead style={{ background: '#f1f5f9' }}><tr><th>Tipo</th><th>Materia/curso</th><th>Año</th><th>Fechas</th><th>Horario</th><th>Profesor</th><th>Estado</th><th>Acción</th></tr></thead>
                 <tbody>{ofertasAcademicas.map(oferta => (
                   <tr key={oferta.id}>
                     <td>{oferta.tipo === 'MESA_EXAMEN' ? 'Mesa de examen' : 'Curso'}</td>
@@ -1150,10 +1257,11 @@ function GestionAcademica({ onCerrarSesion }) {
                     <td>{oferta.anio_carrera || '—'}</td>
                     <td>{oferta.fecha_examen || [oferta.fecha_inicio, oferta.fecha_fin].filter(Boolean).join(' a ') || '—'}</td>
                     <td>{oferta.horario || '—'}</td>
+                    <td>{oferta.profesor || '—'}</td>
                     <td>{oferta.activa ? 'Activa' : 'Inactiva'}</td>
                     <td><button onClick={() => cambiarEstadoOferta(oferta)} style={{ padding: '6px 9px', cursor: 'pointer' }}>{oferta.activa ? 'Desactivar' : 'Activar'}</button></td>
                   </tr>
-                ))}{ofertasAcademicas.length === 0 && <tr><td colSpan="7" align="center">Todavía no hay ofertas registradas.</td></tr>}</tbody>
+                ))}{ofertasAcademicas.length === 0 && <tr><td colSpan="8" align="center">Todavía no hay ofertas registradas.</td></tr>}</tbody>
               </table>
             </div>
           </div>
@@ -1242,10 +1350,24 @@ function GestionAcademica({ onCerrarSesion }) {
               {periodosCuota.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>{periodosCuota.map(item => <button key={item.periodo} type="button" onClick={() => { setPeriodoTarifa(item.periodo); setImporteTarifa(String(item.importe)); }} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', cursor: 'pointer' }}>{item.periodo}: {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(item.importe))} · editar</button>)}</div>}
             </section>
 
-            <form onSubmit={registrarPagoCuota} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22 }}>
-              <label style={{ display: 'grid', gap: 5 }}>DNI del alumno
-                <input required inputMode="numeric" value={formPago.dni} onChange={e => setFormPago({ ...formPago, dni: e.target.value })} style={{ padding: 9 }} />
-              </label>
+            <section style={{ padding: 16, background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 10, marginBottom: 16 }}>
+              <h3 style={{ margin: '0 0 12px', color: '#163654' }}>Buscar alumno que va a pagar</h3>
+              <form onSubmit={buscarAlumnosParaPago} style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                <input value={busquedaAlumnoPago} onChange={e => { setBusquedaAlumnoPago(e.target.value); setAlumnoSeleccionadoPago(null); setFormPago(current => ({ ...current, dni: '' })); setReciboPago(null); }} placeholder="DNI o nombre y apellido" aria-label="Buscar alumno por DNI o nombre" style={{ flex: '1 1 250px', padding: 10, border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                <button type="submit" disabled={buscandoAlumnosPago} style={{ padding: '9px 14px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{buscandoAlumnosPago ? 'Buscando…' : 'Buscar alumno'}</button>
+              </form>
+              {resultadosAlumnosPago.length > 0 && <div style={{ display: 'grid', gap: 8, marginTop: 12 }}>{resultadosAlumnosPago.map(alumno => <button key={alumno.dni} type="button" onClick={() => seleccionarAlumnoParaPago(alumno)} style={{ textAlign: 'left', padding: 12, background: '#fff', border: '1px solid #cbd5e1', borderRadius: 6, cursor: 'pointer' }}><strong>{alumno.alumno}</strong> · DNI {alumno.dni}{alumno.ultimo_periodo ? <span style={{ display: 'block', color: '#475569', marginTop: 3 }}>Último pago: {alumno.ultimo_periodo} · {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(alumno.ultimo_importe))}</span> : <span style={{ display: 'block', color: '#64748b', marginTop: 3 }}>No registra pagos anteriores</span>}</button>)}</div>}
+              {alumnoSeleccionadoPago && <div style={{ marginTop: 14, padding: 12, background: '#ecfdf5', border: '1px solid #bbf7d0', borderRadius: 6 }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+                  <div><strong>Alumno seleccionado: {alumnoSeleccionadoPago.alumno}</strong><div>DNI: {alumnoSeleccionadoPago.dni}</div>
+                    {alumnoSeleccionadoPago.ultimo_periodo ? <div>Cuota anterior: {alumnoSeleccionadoPago.ultimo_periodo} · {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(alumnoSeleccionadoPago.ultimo_importe))} ({String(alumnoSeleccionadoPago.ultima_fecha_pago || '').slice(0, 10)})</div> : <div>No registra pagos anteriores.</div>}
+                  </div>
+                  <button type="button" onClick={() => { setAlumnoSeleccionadoPago(null); setFormPago(current => ({ ...current, dni: '' })); setReciboPago(null); }} style={{ padding: '7px 10px' }}>Cambiar alumno</button>
+                </div>
+              </div>}
+            </section>
+
+            <form onSubmit={registrarPagoCuota} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22, opacity: alumnoSeleccionadoPago ? 1 : 0.6 }}>
               <label style={{ display: 'grid', gap: 5 }}>Mes que paga
                 <input required type="month" value={formPago.periodo} onChange={e => {
                   setPeriodoPagos(e.target.value);
@@ -1270,11 +1392,28 @@ function GestionAcademica({ onCerrarSesion }) {
               <label style={{ display: 'grid', gap: 5, gridColumn: '1 / -1' }}>Observaciones (opcional)
                 <input maxLength="500" value={formPago.observaciones} onChange={e => setFormPago({ ...formPago, observaciones: e.target.value })} style={{ padding: 9 }} />
               </label>
-              <button type="submit" disabled={guardandoPago} style={{ justifySelf: 'start', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoPago ? 'Registrando…' : 'Registrar pago recibido'}</button>
+              <button type="submit" disabled={guardandoPago || !alumnoSeleccionadoPago} style={{ justifySelf: 'start', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: alumnoSeleccionadoPago ? 'pointer' : 'not-allowed' }}>{guardandoPago ? 'Registrando…' : 'Registrar pago recibido'}</button>
             </form>
 
             {errorPago && <p role="alert" style={{ color: '#b91c1c' }}>{errorPago}</p>}
             {mensajePago && <p role="status" style={{ color: '#166534' }}>{mensajePago}</p>}
+            {reciboPago && <>
+              <style>{`@media print { body * { visibility: hidden !important; } .recibo-cuota-print, .recibo-cuota-print * { visibility: visible !important; } .recibo-cuota-print { position: fixed !important; inset: 0 auto auto 0 !important; width: 100% !important; padding: 24px !important; color: #111 !important; background: #fff !important; box-shadow: none !important; } .recibo-acciones { display: none !important; } @page { margin: 12mm; } }`}</style>
+              <section className="recibo-cuota-print" style={{ border: '2px solid #163654', borderRadius: 10, padding: 18, marginBottom: 22, background: '#fff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 14, alignItems: 'center', borderBottom: '1px solid #cbd5e1', paddingBottom: 12 }}>
+                  <div><strong style={{ fontSize: 20, color: '#163654' }}>Instituto San Mateo</strong><div>Recibo de pago de cuota</div></div>
+                  <strong>N.º {reciboPago.id}</strong>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 10, marginTop: 16 }}>
+                  <div><strong>Alumno:</strong> {reciboPago.alumno}</div><div><strong>DNI:</strong> {reciboPago.dni}</div>
+                  <div><strong>Período abonado:</strong> {reciboPago.periodo}</div><div><strong>Importe:</strong> {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(reciboPago.importe))}</div>
+                  <div><strong>Fecha:</strong> {reciboPago.fecha_pago}</div><div><strong>Medio:</strong> {reciboPago.medio === 'TRANSFERENCIA' ? 'Transferencia' : 'Efectivo'}</div>
+                  {reciboPago.referencia && <div><strong>Comprobante:</strong> {reciboPago.referencia}</div>}
+                  {reciboPago.observaciones && <div><strong>Observaciones:</strong> {reciboPago.observaciones}</div>}
+                </div>
+                <div className="recibo-acciones" style={{ display: 'flex', gap: 10, marginTop: 16 }}><button type="button" onClick={() => window.print()} style={{ padding: '9px 14px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>Imprimir recibo</button><button type="button" onClick={() => setReciboPago(null)} style={{ padding: '9px 14px' }}>Cerrar recibo</button></div>
+              </section>
+            </>}
             <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#163654', fontWeight: 600 }}>Ver pagos de
                 <input type="month" value={periodoPagos} onChange={e => {

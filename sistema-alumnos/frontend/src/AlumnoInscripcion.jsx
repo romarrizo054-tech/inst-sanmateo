@@ -342,6 +342,7 @@ export default function AlumnoInscripcion() {
                             {oferta.anio_carrera ? ` · ${oferta.anio_carrera}` : ''}
                             {fechaTexto ? ` · ${fechaTexto}` : ''}
                             {oferta.horario ? ` · ${oferta.horario}` : ''}
+                            {oferta.profesor ? ` · Prof. ${oferta.profesor}` : ''}
                           </span>
                         </span>
                       </label>
