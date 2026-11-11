@@ -83,6 +83,27 @@ const cursosIniciales = [
   'Inglés Técnico'
 ];
 
+const materiasIniciales = [
+  ['Estado Sociedad y Cultura', 'PRIMER AÑO'],
+  ['Física y Matemática', 'PRIMER AÑO'],
+  ['Anatomía, Histología y Fisiología', 'PRIMER AÑO'],
+  ['Química Gral., Orgánica e Inorg.', 'PRIMER AÑO'],
+  ['Fundamentos Básicos de Labor.', 'PRIMER AÑO'],
+  ['Actitud y Ética Profesional', 'PRIMER AÑO'],
+  ['Bioquímica Clínica', 'PRIMER AÑO'],
+  ['Práctica de Bioquímica Clínica I', 'PRIMER AÑO'],
+  ['Hematología y Hemoterapia', 'PRIMER AÑO'],
+  ['Higiene y Seguridad en el Trabaj.', 'PRIMER AÑO'],
+  ['Comunicación y TIC', 'SEGUNDO AÑO'],
+  ['Primeros Auxilios', 'SEGUNDO AÑO'],
+  ['Bacteriología y Prep. De Mater.', 'SEGUNDO AÑO'],
+  ['Organización y Gestión de las I.S.', 'SEGUNDO AÑO'],
+  ['Inmunología', 'SEGUNDO AÑO'],
+  ['Biología y Genética', 'SEGUNDO AÑO'],
+  ['Procedimientos Específicos', 'SEGUNDO AÑO'],
+  ['Inglés Técnico', 'SEGUNDO AÑO']
+];
+
 const ofertasSchemaReady = (async () => {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ofertas_academicas (
@@ -108,6 +129,49 @@ const ofertasSchemaReady = (async () => {
       KEY idx_oferta_id (oferta_id)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS alumnos_bajas (
+      dni VARCHAR(30) NOT NULL PRIMARY KEY,
+      motivo VARCHAR(255) NULL,
+      fecha_baja TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS materias_catalogo (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      materia VARCHAR(255) NOT NULL,
+      anio_carrera VARCHAR(100) NOT NULL,
+      UNIQUE KEY uq_materia_anio (materia, anio_carrera)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app_config (
+      clave VARCHAR(100) NOT NULL PRIMARY KEY,
+      valor VARCHAR(255) NULL
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS pagos_cuotas (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      alumno_dni VARCHAR(30) NOT NULL,
+      periodo CHAR(7) NOT NULL,
+      importe DECIMAL(12, 2) NOT NULL,
+      medio VARCHAR(20) NOT NULL,
+      fecha_pago DATE NOT NULL,
+      referencia VARCHAR(120) NULL,
+      observaciones VARCHAR(500) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      KEY idx_pagos_periodo (periodo),
+      KEY idx_pagos_alumno_periodo (alumno_dni, periodo)
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cuotas_periodos (
+      periodo CHAR(7) NOT NULL PRIMARY KEY,
+      importe DECIMAL(12, 2) NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
 
   const [rows] = await pool.query('SELECT COUNT(*) AS total FROM ofertas_academicas');
   if (Number(rows[0].total) === 0) {
@@ -117,7 +181,68 @@ const ofertasSchemaReady = (async () => {
       [values]
     );
   }
+
+  const [materiasSeed] = await pool.query(
+    'SELECT clave FROM app_config WHERE clave = ?',
+    ['materias_catalogo_inicializado']
+  );
+  if (materiasSeed.length === 0) {
+    await pool.query(
+      'INSERT IGNORE INTO materias_catalogo (materia, anio_carrera) VALUES ?',
+      [materiasIniciales]
+    );
+    await pool.query(
+      'INSERT INTO app_config (clave, valor) VALUES (?, ?)',
+      ['materias_catalogo_inicializado', '1']
+    );
+  }
 })();
+
+function periodoActualCuota() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Argentina/Buenos_Aires', year: 'numeric', month: '2-digit'
+  }).format(new Date()).slice(0, 7);
+}
+
+function periodosEntre(inicio, fin) {
+  const periodos = [];
+  let [anio, mes] = inicio.split('-').map(Number);
+  const [anioFin, mesFin] = fin.split('-').map(Number);
+  while (anio < anioFin || (anio === anioFin && mes <= mesFin)) {
+    periodos.push(`${anio}-${String(mes).padStart(2, '0')}`);
+    if (++mes === 13) { mes = 1; anio += 1; }
+  }
+  return periodos;
+}
+
+async function obtenerEstadoCuota(dni, executor = pool) {
+  const [config] = await executor.query('SELECT valor FROM app_config WHERE clave = ?', ['cuotas_periodo_inicio']);
+  if (!config.length || !config[0].valor) return null;
+  const inicio = String(config[0].valor);
+  const periodos = periodosEntre(inicio, periodoActualCuota());
+  const [tarifas] = await executor.query(
+    'SELECT periodo, importe FROM cuotas_periodos WHERE periodo BETWEEN ? AND ?', [inicio, periodoActualCuota()]
+  );
+  const importes = new Map(tarifas.map(row => [row.periodo, Number(row.importe)]));
+  if (periodos.some(periodo => !importes.has(periodo))) return 0;
+  const [pagos] = await executor.query(`
+    SELECT periodo, COALESCE(SUM(importe), 0) AS total
+    FROM pagos_cuotas WHERE alumno_dni = ? AND periodo BETWEEN ? AND ? GROUP BY periodo
+  `, [dni, inicio, periodoActualCuota()]);
+  const pagado = new Map(pagos.map(row => [row.periodo, Number(row.total)]));
+  return periodos.every(periodo => (pagado.get(periodo) || 0) >= importes.get(periodo)) ? 1 : 0;
+}
+
+async function actualizarEstadoCuota(dni, executor = pool) {
+  const estado = await obtenerEstadoCuota(dni, executor);
+  if (estado !== null) await executor.query('UPDATE alumnos SET cuota_al_dia = ? WHERE dni = ?', [estado, dni]);
+  return estado;
+}
+
+async function recalcularEstadosCuotaTodos() {
+  const [alumnos] = await pool.query('SELECT dni FROM alumnos');
+  for (const alumno of alumnos) await actualizarEstadoCuota(alumno.dni);
+}
 
 ofertasSchemaReady
   .then(() => pool.getConnection())
@@ -249,7 +374,13 @@ app.post('/api/alumnos', requiereSecretaria, async (req, res) => {
 app.get('/api/alumnos/:dni', requiereSecretaria, async (req, res) => {
   try {
     const dni = req.params.dni.trim();
-    const [alumnos] = await pool.query('SELECT * FROM alumnos WHERE dni = ?', [dni]);
+    await ofertasSchemaReady;
+    const [alumnos] = await pool.query(`
+      SELECT a.*, IF(b.dni IS NULL, 0, 1) AS dado_de_baja
+      FROM alumnos a
+      LEFT JOIN alumnos_bajas b ON b.dni = a.dni
+      WHERE a.dni = ?
+    `, [dni]);
     if (alumnos.length === 0) {
       return res.status(404).json({ message: 'Alumno no encontrado' });
     }
@@ -281,6 +412,57 @@ app.patch('/api/alumnos/:dni/cuota', requiereSecretaria, async (req, res) => {
   } catch (error) {
     console.error('Error al actualizar cuota:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+app.patch('/api/secretaria/alumnos/:dni/estado', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const dni = req.params.dni.trim();
+    if (typeof req.body.dadoDeBaja !== 'boolean') {
+      return res.status(400).json({ error: 'Indica si el alumno queda dado de baja' });
+    }
+    const [alumnos] = await pool.query('SELECT dni FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado' });
+
+    if (req.body.dadoDeBaja) {
+      await pool.query(`
+        INSERT INTO alumnos_bajas (dni) VALUES (?)
+        ON DUPLICATE KEY UPDATE fecha_baja = CURRENT_TIMESTAMP
+      `, [dni]);
+    } else {
+      await pool.query('DELETE FROM alumnos_bajas WHERE dni = ?', [dni]);
+    }
+    res.json({ message: req.body.dadoDeBaja ? 'Alumno dado de baja' : 'Alumno reactivado', dadoDeBaja: req.body.dadoDeBaja });
+  } catch (error) {
+    console.error('Error al cambiar el estado del alumno:', error);
+    res.status(500).json({ error: 'No se pudo cambiar el estado del alumno' });
+  }
+});
+
+app.delete('/api/secretaria/alumnos/:dni', requiereSecretaria, async (req, res) => {
+  let connection;
+  try {
+    await ofertasSchemaReady;
+    const dni = req.params.dni.trim();
+    const [alumnos] = await pool.query('SELECT dni FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado' });
+
+    connection = await pool.getConnection();
+    await connection.beginTransaction();
+    await connection.query('DELETE FROM calificaciones WHERE alumno_dni = ?', [dni]);
+    await connection.query('DELETE FROM inscripciones WHERE alumno_dni = ?', [dni]);
+    await connection.query('DELETE FROM inscripciones_ofertas WHERE alumno_dni = ?', [dni]);
+    await connection.query('DELETE FROM alumnos_bajas WHERE dni = ?', [dni]);
+    await connection.query('DELETE FROM alumnos WHERE dni = ?', [dni]);
+    await connection.commit();
+    res.json({ message: 'Alumno y sus registros académicos eliminados' });
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error('Error al eliminar alumno:', error);
+    res.status(500).json({ error: 'No se pudo eliminar el alumno' });
+  } finally {
+    if (connection) connection.release();
   }
 });
 
@@ -369,6 +551,192 @@ app.patch('/api/secretaria/ofertas/:id/estado', requiereSecretaria, async (req, 
   }
 });
 
+app.get('/api/secretaria/materias', requiereSecretaria, async (_req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const [rows] = await pool.query(`
+      SELECT id, materia, anio_carrera
+      FROM materias_catalogo
+      ORDER BY anio_carrera ASC, materia ASC
+    `);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al consultar materias:', error);
+    res.status(500).json({ error: 'No se pudo cargar el catálogo de materias' });
+  }
+});
+
+app.post('/api/secretaria/materias', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const materia = String(req.body.materia || '').trim();
+    const anioCarrera = String(req.body.anio_carrera || '').trim();
+    if (!materia || !anioCarrera) {
+      return res.status(400).json({ error: 'Completa el nombre de la materia y el año' });
+    }
+    const [result] = await pool.query(
+      'INSERT INTO materias_catalogo (materia, anio_carrera) VALUES (?, ?)',
+      [materia, anioCarrera]
+    );
+    res.status(201).json({ id: result.insertId, message: 'Materia agregada' });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Ya existe esa materia para ese año' });
+    console.error('Error al agregar materia:', error);
+    res.status(500).json({ error: 'No se pudo agregar la materia' });
+  }
+});
+
+app.put('/api/secretaria/materias/:id', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const materia = String(req.body.materia || '').trim();
+    const anioCarrera = String(req.body.anio_carrera || '').trim();
+    if (!materia || !anioCarrera) {
+      return res.status(400).json({ error: 'Completa el nombre de la materia y el año' });
+    }
+    const [result] = await pool.query(
+      'UPDATE materias_catalogo SET materia = ?, anio_carrera = ? WHERE id = ?',
+      [materia, anioCarrera, req.params.id]
+    );
+    if (!result.affectedRows) {
+      const [existing] = await pool.query('SELECT id FROM materias_catalogo WHERE id = ?', [req.params.id]);
+      if (!existing.length) return res.status(404).json({ error: 'Materia no encontrada' });
+    }
+    res.json({ message: 'Materia actualizada' });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') return res.status(409).json({ error: 'Ya existe esa materia para ese año' });
+    console.error('Error al actualizar materia:', error);
+    res.status(500).json({ error: 'No se pudo actualizar la materia' });
+  }
+});
+
+app.delete('/api/secretaria/materias/:id', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const [result] = await pool.query('DELETE FROM materias_catalogo WHERE id = ?', [req.params.id]);
+    if (!result.affectedRows) return res.status(404).json({ error: 'Materia no encontrada' });
+    res.json({ message: 'Materia eliminada del catálogo; las notas históricas se conservaron' });
+  } catch (error) {
+    console.error('Error al eliminar materia:', error);
+    res.status(500).json({ error: 'No se pudo eliminar la materia' });
+  }
+});
+
+app.get('/api/secretaria/cuotas/configuracion', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const [[inicio], [periodos]] = await Promise.all([
+      pool.query('SELECT valor FROM app_config WHERE clave = ?', ['cuotas_periodo_inicio']),
+      pool.query('SELECT periodo, importe FROM cuotas_periodos ORDER BY periodo DESC')
+    ]);
+    res.json({ periodoInicio: inicio[0]?.valor || '', periodos });
+  } catch (error) {
+    console.error('Error al cargar configuración de cuotas:', error);
+    res.status(500).json({ error: 'No se pudo cargar la configuración de cuotas' });
+  }
+});
+
+app.put('/api/secretaria/cuotas/configuracion/inicio', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const periodo = String(req.body.periodoInicio || '').trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo) || periodo > periodoActualCuota()) {
+      return res.status(400).json({ error: 'Selecciona un mes de inicio válido, que no sea futuro' });
+    }
+    await pool.query(`
+      INSERT INTO app_config (clave, valor) VALUES ('cuotas_periodo_inicio', ?)
+      ON DUPLICATE KEY UPDATE valor = VALUES(valor)
+    `, [periodo]);
+    await recalcularEstadosCuotaTodos();
+    res.json({ message: 'Mes inicial actualizado y estados recalculados', periodoInicio: periodo });
+  } catch (error) {
+    console.error('Error al guardar inicio de cuotas:', error);
+    res.status(500).json({ error: 'No se pudo guardar el mes inicial' });
+  }
+});
+
+app.put('/api/secretaria/cuotas/periodos/:periodo', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const periodo = String(req.params.periodo || '').trim();
+    const importe = Number(req.body.importe);
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) return res.status(400).json({ error: 'Mes inválido' });
+    if (!Number.isFinite(importe) || importe <= 0) return res.status(400).json({ error: 'El importe debe ser mayor que cero' });
+    await pool.query(`
+      INSERT INTO cuotas_periodos (periodo, importe) VALUES (?, ?)
+      ON DUPLICATE KEY UPDATE importe = VALUES(importe)
+    `, [periodo, importe]);
+    await recalcularEstadosCuotaTodos();
+    res.json({ message: 'Importe mensual guardado y estados recalculados' });
+  } catch (error) {
+    console.error('Error al guardar importe mensual:', error);
+    res.status(500).json({ error: 'No se pudo guardar el importe mensual' });
+  }
+});
+
+app.get('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const periodo = String(req.query.periodo || '').trim();
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) {
+      return res.status(400).json({ error: 'Indica un período con formato AAAA-MM' });
+    }
+    const [rows] = await pool.query(`
+      SELECT p.id, p.alumno_dni AS dni, a.alumno, p.periodo, p.importe, p.medio,
+        p.fecha_pago, p.referencia, p.observaciones
+      FROM pagos_cuotas p
+      JOIN alumnos a ON a.dni = p.alumno_dni
+      WHERE p.periodo = ?
+      ORDER BY p.fecha_pago DESC, p.id DESC
+    `, [periodo]);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error al consultar pagos de cuotas:', error);
+    res.status(500).json({ error: 'No se pudo cargar el registro de pagos' });
+  }
+});
+
+app.post('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const dni = String(req.body.dni || '').trim();
+    const periodo = String(req.body.periodo || '').trim();
+    const importe = Number(req.body.importe);
+    const medio = String(req.body.medio || '').trim().toUpperCase();
+    const fechaPago = String(req.body.fecha_pago || '').trim();
+    const referencia = String(req.body.referencia || '').trim();
+    const observaciones = String(req.body.observaciones || '').trim();
+
+    if (!dni) return res.status(400).json({ error: 'Ingresa el DNI del alumno' });
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodo)) {
+      return res.status(400).json({ error: 'Selecciona un mes válido' });
+    }
+    if (!Number.isFinite(importe) || importe <= 0) {
+      return res.status(400).json({ error: 'El importe debe ser mayor que cero' });
+    }
+    if (!['EFECTIVO', 'TRANSFERENCIA'].includes(medio)) {
+      return res.status(400).json({ error: 'El medio debe ser efectivo o transferencia' });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(fechaPago)) {
+      return res.status(400).json({ error: 'Ingresa una fecha de pago válida' });
+    }
+
+    const [alumnos] = await pool.query('SELECT dni FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'No se encontró un alumno con ese DNI' });
+
+    const [result] = await pool.query(`
+      INSERT INTO pagos_cuotas
+        (alumno_dni, periodo, importe, medio, fecha_pago, referencia, observaciones)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `, [dni, periodo, importe, medio, fechaPago, referencia || null, observaciones || null]);
+    const cuotaAlDia = await actualizarEstadoCuota(dni);
+    res.status(201).json({ id: result.insertId, message: 'Pago registrado', cuota_al_dia: cuotaAlDia });
+  } catch (error) {
+    console.error('Error al registrar pago de cuota:', error);
+    res.status(500).json({ error: 'No se pudo registrar el pago' });
+  }
+});
+
 // Validar requisitos para el link de inscripción del alumno
 app.get('/api/inscripcion/validar/:dni', async (req, res) => {
   try {
@@ -380,6 +748,10 @@ app.get('/api/inscripcion/validar/:dni', async (req, res) => {
     }
 
     const alumno = alumnoRows[0];
+    const [bajas] = await pool.query('SELECT dni FROM alumnos_bajas WHERE dni = ?', [dni]);
+    if (bajas.length) {
+      return res.status(403).json({ error: 'El alumno está dado de baja. Comuníquese con secretaría.' });
+    }
     if (!alumno.cuota_al_dia) {
       return res.status(403).json({ error: 'Registra deuda de cuotas. Por favor, regularice su situación en administración para inscribirse.' });
     }
@@ -425,6 +797,8 @@ app.post('/api/inscripcion/confirmar-ofertas', async (req, res) => {
 
     const [alumnos] = await pool.query('SELECT dni, cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
     if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado en el padrón' });
+    const [bajas] = await pool.query('SELECT dni FROM alumnos_bajas WHERE dni = ?', [dni]);
+    if (bajas.length) return res.status(403).json({ error: 'El alumno está dado de baja' });
     if (!alumnos[0].cuota_al_dia) return res.status(403).json({ error: 'Debe regularizar las cuotas antes de inscribirse' });
 
     const [ofertas] = await pool.query(
@@ -490,6 +864,8 @@ app.post('/api/inscripcion/confirmar', async (req, res) => {
 
     const [alumnos] = await pool.query('SELECT cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
     if (!alumnos.length) return res.status(404).json({ error: 'Alumno no encontrado en el padrón' });
+    const [bajas] = await pool.query('SELECT dni FROM alumnos_bajas WHERE dni = ?', [dni]);
+    if (bajas.length) return res.status(403).json({ error: 'El alumno está dado de baja' });
     if (!alumnos[0].cuota_al_dia) return res.status(403).json({ error: 'Debe regularizar las cuotas antes de inscribirse' });
 
     const [ofertas] = await pool.query(
@@ -571,9 +947,12 @@ app.get('/api/secretaria/inscriptos', requiereSecretaria, async (req, res) => {
 // Ver alumnos cargados en el libro matriz
 app.get('/api/secretaria/alumnos', requiereSecretaria, async (req, res) => {
   try {
+    await ofertasSchemaReady;
     const [rows] = await pool.query(`
-      SELECT dni, alumno, carrera, turno, anio_cursado, cuota_al_dia
-      FROM alumnos
+      SELECT a.dni, a.alumno, a.carrera, a.turno, a.anio_cursado, a.cuota_al_dia,
+        IF(b.dni IS NULL, 0, 1) AS dado_de_baja
+      FROM alumnos a
+      LEFT JOIN alumnos_bajas b ON b.dni = a.dni
       ORDER BY alumno ASC
     `);
     res.json(rows);

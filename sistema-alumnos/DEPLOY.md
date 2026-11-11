@@ -11,6 +11,12 @@ El servicio de Render compila el frontend Vite y sirve tanto la página como la 
 
 La URL pública abre solo el panel de inscripción para alumnos. El personal entra en `/secretaria` e ingresa `ADMIN_SECRET`. La API también exige esa clave para consultar inscriptos, ver el padrón o las fichas, cambiar cuotas y guardar datos del libro matriz.
 
-Desde el panel de secretaría, la sección **Cursos y mesas** permite agregar cursos y fechas de mesas de examen, publicarlos o desactivarlos. Las ofertas activas aparecen automáticamente en el panel de los alumnos.
+Desde el panel de secretaría, la sección **Cursos y mesas** permite agregar cursos y fechas de mesas de examen, publicarlos o desactivarlos. Las ofertas activas aparecen automáticamente en el panel de los alumnos. El backend crea las tablas necesarias y carga los cursos y materias iniciales una sola vez.
+
+La sección **Materias** permite añadir, editar o borrar materias del catálogo. El catálogo alimenta la lista de asignaturas del Libro Matriz; borrar una materia no elimina las calificaciones que ya se hayan registrado.
+
+En **Libro Matriz y Cuotas → Listado de Alumnos**, secretaría puede abrir la ficha para editarla, dar de baja/reactivar al alumno o eliminar definitivamente la ficha junto con sus calificaciones e inscripciones. La baja conserva los datos e impide inscribirse; eliminar pide confirmación.
+
+La sección **Pagos de cuotas** permite que Secretaría configure el mes desde el que controla la deuda y el importe requerido para cada período. Puede registrar pagos en efectivo o transferencia, incluso parciales; se suman por alumno y mes. Al completar todos los meses requeridos, el indicador `cuota_al_dia` del padrón se recalcula inmediatamente. Cada mes del rango debe tener un importe configurado y los excedentes no se trasladan a otros meses. El panel también muestra el total mensual y permite descargar los pagos en Excel.
 
 No subas contraseñas ni archivos `.env` al repositorio. La clave que antes estaba escrita en el código fue retirada; si era una clave real, rótala en MySQL.

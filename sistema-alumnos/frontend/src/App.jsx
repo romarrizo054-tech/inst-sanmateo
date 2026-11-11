@@ -4,6 +4,10 @@ import AlumnoInscripcion from './AlumnoInscripcion';
 
 const ADMIN_KEY_STORAGE = 'sanmateo-admin-key';
 const API_BASE = import.meta.env.VITE_API_URL || '';
+const fechaLocalISO = () => {
+  const fecha = new Date();
+  return `${fecha.getFullYear()}-${String(fecha.getMonth() + 1).padStart(2, '0')}-${String(fecha.getDate()).padStart(2, '0')}`;
+};
 
 function adminFetch(url, options = {}) {
   return fetch(url, {
@@ -35,6 +39,24 @@ const PLAN_MATERIAS = [
   { anio_carrera: 'SEGUNDO AÑO', materia: 'Procedimientos Específicos' },
   { anio_carrera: 'SEGUNDO AÑO', materia: 'Inglés Técnico' }
 ];
+
+const crearNotasVacias = materias => materias.map(m => ({
+  ...m, nota_num: '', nota_letras: '', libro_acta: '', folio_acta: '', fecha_examen: '', condicion: ''
+}));
+
+const gruposDeAnio = [
+  { id: 1, titulo: 'Materias de 1er año' },
+  { id: 2, titulo: 'Materias de 2do año' },
+  { id: 3, titulo: 'Materias de 3er año' }
+];
+
+const clasificarAnio = anio => {
+  const texto = String(anio || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+  if (texto.includes('PRIMER') || /^1(?:ER|RO|O|°|º)?(?:\s|$)/.test(texto)) return 1;
+  if (texto.includes('SEGUNDO') || /^2(?:DO|DA|°|º)?(?:\s|$)/.test(texto)) return 2;
+  if (texto.includes('TERCER') || texto.includes('TERCERO') || /^3(?:ER|RO|°|º)?(?:\s|$)/.test(texto)) return 3;
+  return null;
+};
 
 const OFERTA_INSCRIPCION = [
   'Comunicación y TIC',
@@ -68,6 +90,25 @@ function GestionAcademica() {
   const [formOferta, setFormOferta] = useState({
     tipo: 'CURSO', materia: '', anio_carrera: '', fecha_inicio: '', fecha_fin: '', fecha_examen: '', horario: ''
   });
+  const [materiasCatalogo, setMateriasCatalogo] = useState([]);
+  const [formMateria, setFormMateria] = useState({ materia: '', anio_carrera: 'PRIMER AÑO' });
+  const [materiaEditando, setMateriaEditando] = useState(null);
+  const [errorCatalogo, setErrorCatalogo] = useState('');
+  const [guardandoMateria, setGuardandoMateria] = useState(false);
+  const [periodoPagos, setPeriodoPagos] = useState(() => fechaLocalISO().slice(0, 7));
+  const [pagosCuotas, setPagosCuotas] = useState([]);
+  const [errorPago, setErrorPago] = useState('');
+  const [mensajePago, setMensajePago] = useState('');
+  const [guardandoPago, setGuardandoPago] = useState(false);
+  const [inicioControlCuotas, setInicioControlCuotas] = useState('');
+  const [periodoTarifa, setPeriodoTarifa] = useState(() => fechaLocalISO().slice(0, 7));
+  const [importeTarifa, setImporteTarifa] = useState('');
+  const [periodosCuota, setPeriodosCuota] = useState([]);
+  const [guardandoConfiguracionCuotas, setGuardandoConfiguracionCuotas] = useState(false);
+  const [formPago, setFormPago] = useState(() => ({
+    dni: '', periodo: fechaLocalISO().slice(0, 7), importe: '', medio: 'EFECTIVO',
+    fecha_pago: fechaLocalISO(), referencia: '', observaciones: ''
+  }));
 
   // ================= ESTADOS: SECRETARÍA - LIBRO MATRIZ =================
   const [subTabMatriz, setSubTabMatriz] = useState('buscar'); // 'buscar' | 'cargar' | 'listado'
@@ -76,6 +117,7 @@ function GestionAcademica() {
   const [alumnoMatriz, setAlumnoMatriz] = useState(null);
   const [errorMatriz, setErrorMatriz] = useState('');
   const [cargandoCuota, setCargandoCuota] = useState(false);
+  const [accionAlumnoDni, setAccionAlumnoDni] = useState(null);
 
   // Estado con TODOS los datos combinados
   const [formMatriz, setFormMatriz] = useState({
@@ -96,9 +138,7 @@ function GestionAcademica() {
     cuota_al_dia: 1
   });
 
-  const [materiasMatriz, setMateriasMatriz] = useState(
-    PLAN_MATERIAS.map(m => ({ ...m, nota_num: '', nota_letras: '', libro_acta: '', folio_acta: '', fecha_examen: '', condicion: '' }))
-  );
+  const [materiasMatriz, setMateriasMatriz] = useState(() => crearNotasVacias(PLAN_MATERIAS));
   const [modoEdicion, setModoEdicion] = useState(false);
 
   useEffect(() => {
@@ -106,7 +146,12 @@ function GestionAcademica() {
       cargarInscriptos();
     }
     if (panelActivo === 'ofertas') cargarOfertasAcademicas();
-  }, [panelActivo]);
+    if (panelActivo === 'materias' || panelActivo === 'matriz') cargarMateriasCatalogo();
+    if (panelActivo === 'cuotas') {
+      cargarPagosCuotas();
+      cargarConfiguracionCuotas();
+    }
+  }, [panelActivo, periodoPagos]);
 
   const cargarInscriptos = async () => {
     try {
@@ -138,6 +183,190 @@ function GestionAcademica() {
       setErrorOferta('');
     } catch (err) {
       setErrorOferta(err.message);
+    }
+  };
+
+  const cargarMateriasCatalogo = async () => {
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/materias`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo cargar el catálogo');
+      setMateriasCatalogo(data);
+      setErrorCatalogo('');
+      return data;
+    } catch (err) {
+      setMateriasCatalogo([]);
+      setErrorCatalogo(err.message);
+      return null;
+    }
+  };
+
+  const cargarPagosCuotas = async () => {
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/pagos-cuotas?periodo=${encodeURIComponent(periodoPagos)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo cargar el registro de pagos');
+      setPagosCuotas(data);
+      setErrorPago('');
+    } catch (err) {
+      setErrorPago(err.message);
+      setPagosCuotas([]);
+    }
+  };
+
+  const cargarConfiguracionCuotas = async () => {
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/cuotas/configuracion`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo cargar la configuración');
+      setInicioControlCuotas(data.periodoInicio || '');
+      setPeriodosCuota(data.periodos || []);
+    } catch (err) {
+      setErrorPago(err.message);
+    }
+  };
+
+  const guardarInicioControlCuotas = async (event) => {
+    event.preventDefault();
+    setErrorPago('');
+    setMensajePago('');
+    setGuardandoConfiguracionCuotas(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/cuotas/configuracion/inicio`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ periodoInicio: inicioControlCuotas })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar el mes inicial');
+      await cargarConfiguracionCuotas();
+      setMensajePago('Configuración guardada. Se recalculó el estado de cuotas del padrón.');
+    } catch (err) {
+      setErrorPago(err.message);
+    } finally {
+      setGuardandoConfiguracionCuotas(false);
+    }
+  };
+
+  const guardarImporteCuota = async (event) => {
+    event.preventDefault();
+    setErrorPago('');
+    setMensajePago('');
+    setGuardandoConfiguracionCuotas(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/cuotas/periodos/${encodeURIComponent(periodoTarifa)}`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ importe: importeTarifa })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar el importe');
+      setImporteTarifa('');
+      await cargarConfiguracionCuotas();
+      setMensajePago('Importe mensual guardado. Se recalculó el estado de cuotas del padrón.');
+    } catch (err) {
+      setErrorPago(err.message);
+    } finally {
+      setGuardandoConfiguracionCuotas(false);
+    }
+  };
+
+  const registrarPagoCuota = async (event) => {
+    event.preventDefault();
+    setErrorPago('');
+    setMensajePago('');
+    setGuardandoPago(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/pagos-cuotas`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formPago)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo registrar el pago');
+      setFormPago({ ...formPago, dni: '', importe: '', referencia: '', observaciones: '' });
+      setMensajePago(data.cuota_al_dia === 1
+        ? 'Pago registrado. El alumno quedó al día.'
+        : data.cuota_al_dia === 0
+          ? 'Pago registrado. El alumno todavía tiene meses pendientes o falta configurar un importe mensual.'
+          : 'Pago registrado. Configura el mes inicial y los importes para activar el cálculo automático.');
+      await cargarPagosCuotas();
+    } catch (err) {
+      setErrorPago(err.message);
+    } finally {
+      setGuardandoPago(false);
+    }
+  };
+
+  const descargarPagosCuotas = () => {
+    const filas = pagosCuotas.map(pago => ({
+      Período: pago.periodo,
+      DNI: pago.dni,
+      Alumno: pago.alumno,
+      Importe: Number(pago.importe),
+      Medio: pago.medio,
+      Fecha: pago.fecha_pago ? String(pago.fecha_pago).slice(0, 10) : '',
+      Referencia: pago.referencia || '',
+      Observaciones: pago.observaciones || ''
+    }));
+    const hoja = XLSX.utils.json_to_sheet(filas);
+    const libro = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(libro, hoja, 'Pagos de cuotas');
+    XLSX.writeFile(libro, `pagos-cuotas-${periodoPagos}.xlsx`);
+  };
+
+  const agregarMateriaCatalogo = async (event) => {
+    event.preventDefault();
+    setErrorCatalogo('');
+    setGuardandoMateria(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/materias`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(formMateria)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo agregar la materia');
+      setFormMateria({ materia: '', anio_carrera: formMateria.anio_carrera });
+      await cargarMateriasCatalogo();
+    } catch (err) {
+      setErrorCatalogo(err.message);
+    } finally {
+      setGuardandoMateria(false);
+    }
+  };
+
+  const guardarMateriaEditada = async (event) => {
+    event.preventDefault();
+    if (!materiaEditando) return;
+    setErrorCatalogo('');
+    setGuardandoMateria(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/materias/${materiaEditando.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ materia: materiaEditando.materia, anio_carrera: materiaEditando.anio_carrera })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo actualizar la materia');
+      setMateriaEditando(null);
+      await cargarMateriasCatalogo();
+    } catch (err) {
+      setErrorCatalogo(err.message);
+    } finally {
+      setGuardandoMateria(false);
+    }
+  };
+
+  const eliminarMateriaCatalogo = async (materia) => {
+    if (!window.confirm(`¿Quitar “${materia.materia}” del catálogo? Las calificaciones ya registradas se conservarán.`)) return;
+    setErrorCatalogo('');
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/materias/${materia.id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo eliminar la materia');
+      setMateriaEditando(null);
+      await cargarMateriasCatalogo();
+    } catch (err) {
+      setErrorCatalogo(err.message);
     }
   };
 
@@ -303,30 +532,31 @@ function GestionAcademica() {
     }
   };
 
-  const handleIniciarEdicion = () => {
-    if (!alumnoMatriz) return;
-    const fNac = alumnoMatriz.fecha_nacimiento ? alumnoMatriz.fecha_nacimiento.substring(0, 10) : (alumnoMatriz.el_dia ? alumnoMatriz.el_dia.substring(0, 10) : '');
+  const prepararEdicionMatriz = (ficha) => {
+    const fNac = ficha.fecha_nacimiento ? ficha.fecha_nacimiento.substring(0, 10) : (ficha.el_dia ? ficha.el_dia.substring(0, 10) : '');
+    const planActual = materiasCatalogo.length ? materiasCatalogo : PLAN_MATERIAS;
     
     setFormMatriz({
-      dni: alumnoMatriz.dni || '',
-      alumno: alumnoMatriz.alumno || '',
-      domicilio: alumnoMatriz.domicilio || '',
-      genero: alumnoMatriz.genero || 'Mujer',
+      dni: ficha.dni || '',
+      alumno: ficha.alumno || '',
+      domicilio: ficha.domicilio || '',
+      genero: ficha.genero || 'Mujer',
       fecha_nacimiento: fNac,
-      edad: alumnoMatriz.edad || '',
-      carrera: alumnoMatriz.carrera || 'Tecnicatura Superior en Laboratorio de Análisis Clínicos',
-      turno: alumnoMatriz.turno || 'Mañana',
-      anio_cursado: alumnoMatriz.anio_cursado || '1er Año',
-      nacido_en: alumnoMatriz.nacido_en || '',
+      edad: ficha.edad || '',
+      carrera: ficha.carrera || 'Tecnicatura Superior en Laboratorio de Análisis Clínicos',
+      turno: ficha.turno || 'Mañana',
+      anio_cursado: ficha.anio_cursado || '1er Año',
+      nacido_en: ficha.nacido_en || '',
       el_dia: fNac,
-      ingreso_con_certificado: alumnoMatriz.ingreso_con_certificado || '',
-      expedido_por: alumnoMatriz.expedido_por || '',
-      plan_estudios: alumnoMatriz.plan_estudios || '',
-      cuota_al_dia: alumnoMatriz.cuota_al_dia ?? 1
+      ingreso_con_certificado: ficha.ingreso_con_certificado || '',
+      expedido_por: ficha.expedido_por || '',
+      plan_estudios: ficha.plan_estudios || '',
+      cuota_al_dia: ficha.cuota_al_dia ?? 1
     });
 
-    const cargadas = PLAN_MATERIAS.map(p => {
-      const encontrada = (alumnoMatriz.materias || []).find(
+    const materiasExistentes = ficha.materias || [];
+    const cargadas = planActual.map(p => {
+      const encontrada = (ficha.materias || []).find(
         m => m.materia.toLowerCase().trim() === p.materia.toLowerCase().trim()
       );
       return encontrada ? {
@@ -339,10 +569,87 @@ function GestionAcademica() {
         condicion: encontrada.condicion || ''
       } : { ...p, nota_num: '', nota_letras: '', libro_acta: '', folio_acta: '', fecha_examen: '', condicion: '' };
     });
+    const materiasFueraDelPlan = materiasExistentes
+      .filter(m => !planActual.some(p => p.materia.trim().toLowerCase() === String(m.materia || '').trim().toLowerCase()))
+      .map(m => ({
+        anio_carrera: m.anio_carrera || '',
+        materia: m.materia || '',
+        nota_num: m.nota_num ?? '',
+        nota_letras: m.nota_letras || '',
+        libro_acta: m.libro_acta || '',
+        folio_acta: m.folio_acta || '',
+        fecha_examen: m.fecha_examen ? m.fecha_examen.substring(0, 10) : '',
+        condicion: m.condicion || ''
+      }));
 
-    setMateriasMatriz(cargadas);
+    setMateriasMatriz([...cargadas, ...materiasFueraDelPlan]);
     setModoEdicion(true);
     setSubTabMatriz('cargar');
+  };
+
+  const handleIniciarEdicion = () => {
+    if (alumnoMatriz) prepararEdicionMatriz(alumnoMatriz);
+  };
+
+  const handleEditarDesdeListado = async (dni) => {
+    setErrorMatriz('');
+    setAccionAlumnoDni(dni);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/alumnos/${dni}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || 'No se pudo abrir la ficha');
+      setAlumnoMatriz(data);
+      setDniBusquedaMatriz(dni);
+      prepararEdicionMatriz(data);
+    } catch (err) {
+      setErrorMatriz(err.message);
+    } finally {
+      setAccionAlumnoDni(null);
+    }
+  };
+
+  const handleCambiarEstadoAlumno = async (alumno) => {
+    const dadoDeBaja = !alumno.dado_de_baja;
+    setErrorMatriz('');
+    setAccionAlumnoDni(alumno.dni);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos/${alumno.dni}/estado`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dadoDeBaja })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo actualizar el estado');
+      await cargarAlumnosMatriz();
+      if (alumnoMatriz?.dni === alumno.dni) {
+        setAlumnoMatriz({ ...alumnoMatriz, dado_de_baja: dadoDeBaja ? 1 : 0 });
+      }
+    } catch (err) {
+      setErrorMatriz(err.message);
+    } finally {
+      setAccionAlumnoDni(null);
+    }
+  };
+
+  const handleEliminarAlumno = async (alumno) => {
+    const confirmado = window.confirm(
+      `¿Eliminar definitivamente a ${alumno.alumno} (DNI ${alumno.dni}) y sus calificaciones e inscripciones? Esta acción no se puede deshacer.`
+    );
+    if (!confirmado) return;
+
+    setErrorMatriz('');
+    setAccionAlumnoDni(alumno.dni);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos/${alumno.dni}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo eliminar el alumno');
+      setAlumnosMatriz(current => current.filter(item => item.dni !== alumno.dni));
+      if (alumnoMatriz?.dni === alumno.dni) setAlumnoMatriz(null);
+    } catch (err) {
+      setErrorMatriz(err.message);
+    } finally {
+      setAccionAlumnoDni(null);
+    }
   };
 
   const handleGuardarMatriz = async (e) => {
@@ -368,6 +675,27 @@ function GestionAcademica() {
   const inscriptosFiltrados = filtroMateria === 'TODAS'
     ? (listaInscriptos || [])
     : (listaInscriptos || []).filter(i => i.materia === filtroMateria);
+  const materiasEnOtrosAnios = materiasCatalogo.filter(materia => !clasificarAnio(materia.anio_carrera));
+
+  const renderFilaMateria = materia => (
+    <tr key={materia.id}>
+      {materiaEditando?.id === materia.id ? <>
+        <td><input required maxLength="255" value={materiaEditando.materia} onChange={e => setMateriaEditando({ ...materiaEditando, materia: e.target.value })} style={{ width: '95%', padding: 7 }} /></td>
+        <td><input required maxLength="100" value={materiaEditando.anio_carrera} onChange={e => setMateriaEditando({ ...materiaEditando, anio_carrera: e.target.value })} style={{ width: '95%', padding: 7 }} /></td>
+        <td style={{ whiteSpace: 'nowrap' }}>
+          <button type="button" onClick={guardarMateriaEditada} disabled={guardandoMateria} style={{ marginRight: 6, padding: '6px 9px', cursor: 'pointer' }}>Guardar</button>
+          <button type="button" onClick={() => setMateriaEditando(null)} style={{ padding: '6px 9px', cursor: 'pointer' }}>Cancelar</button>
+        </td>
+      </> : <>
+        <td>{materia.materia}</td>
+        <td>{materia.anio_carrera}</td>
+        <td style={{ whiteSpace: 'nowrap' }}>
+          <button type="button" onClick={() => setMateriaEditando({ ...materia })} style={{ marginRight: 6, padding: '6px 9px', cursor: 'pointer' }}>Editar</button>
+          <button type="button" onClick={() => eliminarMateriaCatalogo(materia)} style={{ padding: '6px 9px', color: '#fff', background: '#b91c1c', border: 0, borderRadius: 4, cursor: 'pointer' }}>Borrar</button>
+        </td>
+      </>}
+    </tr>
+  );
 
   const descargarExcelInscriptos = () => {
     const filas = inscriptosFiltrados.map(item => ({
@@ -503,6 +831,28 @@ function GestionAcademica() {
               color: panelActivo === 'ofertas' ? '#163654' : '#e2edf3'
             }}>
             📚 Cursos y mesas
+          </button>
+
+          <button
+            onClick={() => setPanelActivo('materias')}
+            style={{
+              padding: '9px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+              fontWeight: '600', fontSize: '14px',
+              background: panelActivo === 'materias' ? '#ffffff' : 'rgba(255,255,255,0.15)',
+              color: panelActivo === 'materias' ? '#163654' : '#e2edf3'
+            }}>
+            📘 Materias
+          </button>
+
+          <button
+            onClick={() => setPanelActivo('cuotas')}
+            style={{
+              padding: '9px 18px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+              fontWeight: '600', fontSize: '14px',
+              background: panelActivo === 'cuotas' ? '#ffffff' : 'rgba(255,255,255,0.15)',
+              color: panelActivo === 'cuotas' ? '#163654' : '#e2edf3'
+            }}>
+            💵 Pagos de cuotas
           </button>
         </div>
       </header>
@@ -795,6 +1145,157 @@ function GestionAcademica() {
           </div>
         )}
 
+        {panelActivo === 'materias' && (
+          <div style={{ background: '#ffffff', borderRadius: '16px', padding: '25px', boxShadow: '0 20px 40px rgba(15, 34, 53, 0.3)' }}>
+            <h2 style={{ marginTop: 0, color: '#163654' }}>Catálogo de materias</h2>
+            <p style={{ color: '#475569' }}>Las materias del catálogo aparecen al cargar o editar fichas del Libro Matriz. Quitar una materia no borra notas históricas.</p>
+
+            <form onSubmit={agregarMateriaCatalogo} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22 }}>
+              <label style={{ display: 'grid', gap: 5 }}>Nombre de materia
+                <input required maxLength="255" value={formMateria.materia} onChange={e => setFormMateria({ ...formMateria, materia: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Año
+                <select required value={formMateria.anio_carrera} onChange={e => setFormMateria({ ...formMateria, anio_carrera: e.target.value })} style={{ padding: 9 }}>
+                  <option value="PRIMER AÑO">1er año</option>
+                  <option value="SEGUNDO AÑO">2do año</option>
+                  <option value="TERCER AÑO">3er año</option>
+                </select>
+              </label>
+              <button type="submit" disabled={guardandoMateria} style={{ alignSelf: 'end', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoMateria ? 'Guardando…' : 'Añadir materia'}</button>
+            </form>
+
+            {errorCatalogo && <p role="alert" style={{ color: '#b91c1c' }}>{errorCatalogo}</p>}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+              <h3 style={{ color: '#163654' }}>Materias ({materiasCatalogo.length})</h3>
+              <button onClick={cargarMateriasCatalogo} style={{ padding: '8px 12px', cursor: 'pointer' }}>Actualizar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 18 }}>
+              {gruposDeAnio.map(grupo => {
+                const materiasDelGrupo = materiasCatalogo.filter(materia => clasificarAnio(materia.anio_carrera) === grupo.id);
+                return (
+                  <section key={grupo.id} style={{ border: '1px solid #dbe4ee', borderRadius: 10, padding: 14 }}>
+                    <h3 style={{ color: '#163654', margin: '0 0 10px' }}>{grupo.titulo} ({materiasDelGrupo.length})</h3>
+                    <div style={{ overflowX: 'auto' }}>
+                      <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
+                        <thead style={{ background: '#f1f5f9' }}><tr><th>Materia</th><th>Año</th><th>Acciones</th></tr></thead>
+                        <tbody>
+                          {materiasDelGrupo.map(renderFilaMateria)}
+                          {materiasDelGrupo.length === 0 && <tr><td colSpan="3" align="center" style={{ color: '#64748b' }}>Todavía no hay materias en este año.</td></tr>}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                );
+              })}
+              {materiasEnOtrosAnios.length > 0 && (
+                <section style={{ border: '1px solid #dbe4ee', borderRadius: 10, padding: 14 }}>
+                  <h3 style={{ color: '#163654', margin: '0 0 10px' }}>Otros años ({materiasEnOtrosAnios.length})</h3>
+                  <div style={{ overflowX: 'auto' }}>
+                    <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
+                      <thead style={{ background: '#f1f5f9' }}><tr><th>Materia</th><th>Año</th><th>Acciones</th></tr></thead>
+                      <tbody>{materiasEnOtrosAnios.map(renderFilaMateria)}</tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+            </div>
+          </div>
+        )}
+
+        {panelActivo === 'cuotas' && (
+          <div style={{ background: '#ffffff', borderRadius: '16px', padding: '25px', boxShadow: '0 20px 40px rgba(15, 34, 53, 0.3)' }}>
+            <h2 style={{ marginTop: 0, color: '#163654' }}>Registro de pagos de cuotas</h2>
+            <p style={{ color: '#475569' }}>Configura desde qué mes revisar la deuda y cuánto debe abonarse en cada mes. Los pagos parciales se acumulan y el estado del alumno se actualiza al instante cuando cubre todos los meses configurados.</p>
+
+            <section style={{ padding: 16, background: '#eff6ff', border: '1px solid #bfdbfe', borderRadius: 10, marginBottom: 20 }}>
+              <h3 style={{ margin: '0 0 12px', color: '#163654' }}>Configuración de cuotas</h3>
+              <form onSubmit={guardarInicioControlCuotas} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: 12, marginBottom: 16 }}>
+                <label style={{ display: 'grid', gap: 5 }}>Controlar deuda desde
+                  <input required type="month" value={inicioControlCuotas} onChange={e => setInicioControlCuotas(e.target.value)} style={{ padding: 9 }} />
+                </label>
+                <button type="submit" disabled={guardandoConfiguracionCuotas} style={{ padding: '10px 14px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoConfiguracionCuotas ? 'Guardando…' : 'Guardar mes inicial'}</button>
+              </form>
+              <form onSubmit={guardarImporteCuota} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'end', gap: 12 }}>
+                <label style={{ display: 'grid', gap: 5 }}>Mes
+                  <input required type="month" value={periodoTarifa} onChange={e => setPeriodoTarifa(e.target.value)} style={{ padding: 9 }} />
+                </label>
+                <label style={{ display: 'grid', gap: 5 }}>Importe requerido para ese mes
+                  <input required type="number" min="0.01" step="0.01" value={importeTarifa} onChange={e => setImporteTarifa(e.target.value)} placeholder="0,00" style={{ padding: 9 }} />
+                </label>
+                <button type="submit" disabled={guardandoConfiguracionCuotas} style={{ padding: '10px 14px', color: '#fff', background: '#166534', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoConfiguracionCuotas ? 'Guardando…' : 'Guardar importe del mes'}</button>
+              </form>
+              <p style={{ margin: '12px 0 0', color: '#475569', fontSize: 14 }}>Cada mes desde el inicio debe tener un importe configurado. Si falta un importe, el sistema considera que el alumno aún no está al día. Los excedentes de un mes no se trasladan al siguiente.</p>
+              {periodosCuota.length > 0 && <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>{periodosCuota.map(item => <button key={item.periodo} type="button" onClick={() => { setPeriodoTarifa(item.periodo); setImporteTarifa(String(item.importe)); }} style={{ padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', cursor: 'pointer' }}>{item.periodo}: {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(item.importe))} · editar</button>)}</div>}
+            </section>
+
+            <form onSubmit={registrarPagoCuota} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))', gap: 12, padding: 16, background: '#f8fafc', borderRadius: 10, marginBottom: 22 }}>
+              <label style={{ display: 'grid', gap: 5 }}>DNI del alumno
+                <input required inputMode="numeric" value={formPago.dni} onChange={e => setFormPago({ ...formPago, dni: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Mes que paga
+                <input required type="month" value={formPago.periodo} onChange={e => {
+                  setPeriodoPagos(e.target.value);
+                  setFormPago({ ...formPago, periodo: e.target.value });
+                }} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Importe recibido
+                <input required type="number" min="0.01" step="0.01" value={formPago.importe} onChange={e => setFormPago({ ...formPago, importe: e.target.value })} placeholder="0,00" style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Medio de pago
+                <select value={formPago.medio} onChange={e => setFormPago({ ...formPago, medio: e.target.value })} style={{ padding: 9 }}>
+                  <option value="EFECTIVO">Efectivo</option>
+                  <option value="TRANSFERENCIA">Transferencia</option>
+                </select>
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>Fecha de recepción
+                <input required type="date" value={formPago.fecha_pago} onChange={e => setFormPago({ ...formPago, fecha_pago: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5 }}>N.º de comprobante (opcional)
+                <input maxLength="120" value={formPago.referencia} onChange={e => setFormPago({ ...formPago, referencia: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <label style={{ display: 'grid', gap: 5, gridColumn: '1 / -1' }}>Observaciones (opcional)
+                <input maxLength="500" value={formPago.observaciones} onChange={e => setFormPago({ ...formPago, observaciones: e.target.value })} style={{ padding: 9 }} />
+              </label>
+              <button type="submit" disabled={guardandoPago} style={{ justifySelf: 'start', padding: '10px 16px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>{guardandoPago ? 'Registrando…' : 'Registrar pago recibido'}</button>
+            </form>
+
+            {errorPago && <p role="alert" style={{ color: '#b91c1c' }}>{errorPago}</p>}
+            {mensajePago && <p role="status" style={{ color: '#166534' }}>{mensajePago}</p>}
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', alignItems: 'center', gap: 12, marginBottom: 10 }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#163654', fontWeight: 600 }}>Ver pagos de
+                <input type="month" value={periodoPagos} onChange={e => {
+                  setPeriodoPagos(e.target.value);
+                  setFormPago(current => ({ ...current, periodo: e.target.value }));
+                }} style={{ padding: 8 }} />
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <strong style={{ color: '#163654' }}>Total registrado: {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(pagosCuotas.reduce((total, pago) => total + Number(pago.importe || 0), 0))}</strong>
+                <button onClick={descargarPagosCuotas} disabled={pagosCuotas.length === 0} style={{ padding: '8px 12px', cursor: pagosCuotas.length ? 'pointer' : 'not-allowed' }}>Descargar Excel</button>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table border="1" cellPadding="8" style={{ width: '100%', minWidth: 850, borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
+                <thead style={{ background: '#f1f5f9' }}><tr><th>Fecha</th><th>DNI</th><th>Alumno</th><th>Mes</th><th>Importe</th><th>Medio</th><th>Comprobante</th><th>Observaciones</th></tr></thead>
+                <tbody>
+                  {pagosCuotas.map(pago => (
+                    <tr key={pago.id}>
+                      <td>{String(pago.fecha_pago || '').slice(0, 10)}</td>
+                      <td>{pago.dni}</td>
+                      <td>{pago.alumno}</td>
+                      <td>{pago.periodo}</td>
+                      <td>{new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(pago.importe))}</td>
+                      <td>{pago.medio === 'TRANSFERENCIA' ? 'Transferencia' : 'Efectivo'}</td>
+                      <td>{pago.referencia || '—'}</td>
+                      <td>{pago.observaciones || '—'}</td>
+                    </tr>
+                  ))}
+                  {pagosCuotas.length === 0 && <tr><td colSpan="8" align="center" style={{ padding: 18, color: '#64748b' }}>No hay pagos registrados para este mes.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         {/* ========================================================= */}
         {/* PANEL 3: LIBRO MATRIZ Y GESTIÓN DE CUOTAS               */}
         {/* ========================================================= */}
@@ -831,7 +1332,7 @@ function GestionAcademica() {
                 👥 Listado de Alumnos
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
                   setModoEdicion(false);
                   setFormMatriz({
                     dni: '',
@@ -850,6 +1351,8 @@ function GestionAcademica() {
                     plan_estudios: '',
                     cuota_al_dia: 1
                   });
+                  const catalogo = await cargarMateriasCatalogo();
+                  setMateriasMatriz(crearNotasVacias(catalogo?.length ? catalogo : PLAN_MATERIAS));
                   setSubTabMatriz('cargar');
                 }}
                 style={{
@@ -875,7 +1378,9 @@ function GestionAcademica() {
                     🔄 Actualizar Padrón
                   </button>
                 </div>
-                <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
+                {errorMatriz && <p role="alert" style={{ color: '#b91c1c' }}>{errorMatriz}</p>}
+                <div style={{ overflowX: 'auto' }}>
+                <table border="1" cellPadding="8" style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', borderColor: '#e2e8f0', textAlign: 'left' }}>
                   <thead style={{ background: '#f1f5f9', color: '#163654' }}>
                     <tr>
                       <th>D.N.I.</th>
@@ -884,6 +1389,8 @@ function GestionAcademica() {
                       <th>Turno</th>
                       <th>Año cursado</th>
                       <th>Cuota</th>
+                      <th>Estado</th>
+                      <th>Acciones</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -895,16 +1402,41 @@ function GestionAcademica() {
                         <td>{alumno.turno || '-'}</td>
                         <td>{alumno.anio_cursado || '-'}</td>
                         <td>{alumno.cuota_al_dia ? 'Al día' : 'Con deuda'}</td>
+                        <td>{alumno.dado_de_baja ? 'De baja' : 'Activo'}</td>
+                        <td style={{ whiteSpace: 'nowrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleEditarDesdeListado(alumno.dni)}
+                            disabled={accionAlumnoDni === alumno.dni}
+                            style={{ marginRight: 6, padding: '6px 8px', cursor: 'pointer' }}>
+                            ✏️ Editar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCambiarEstadoAlumno(alumno)}
+                            disabled={accionAlumnoDni === alumno.dni}
+                            style={{ marginRight: 6, padding: '6px 8px', cursor: 'pointer' }}>
+                            {alumno.dado_de_baja ? 'Reactivar' : 'Dar de baja'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleEliminarAlumno(alumno)}
+                            disabled={accionAlumnoDni === alumno.dni}
+                            style={{ padding: '6px 8px', color: '#fff', background: '#b91c1c', border: 0, borderRadius: 4, cursor: 'pointer' }}>
+                            Eliminar
+                          </button>
+                        </td>
                       </tr>
                     )) : (
                       <tr>
-                        <td colSpan="6" align="center" style={{ padding: '20px', color: '#64748b' }}>
+                        <td colSpan="8" align="center" style={{ padding: '20px', color: '#64748b' }}>
                           No hay alumnos cargados en la base de datos.
                         </td>
                       </tr>
                     )}
                   </tbody>
                 </table>
+                </div>
               </section>
             ) : subTabMatriz === 'buscar' ? (
               <div>
@@ -939,6 +1471,12 @@ function GestionAcademica() {
 
                     {/* CONTROL DE CUOTA DIRECTO */}
                     <div style={{ margin: '15px 0', padding: '12px', background: '#ffffff', border: '1px solid #e2e8f0', borderRadius: '8px', display: 'flex', alignItems: 'center', gap: '15px' }}>
+                      <span>
+                        <strong>Estado del alumno: </strong>
+                        <span style={{ color: alumnoMatriz.dado_de_baja ? '#b91c1c' : '#15803d', fontWeight: 'bold' }}>
+                          {alumnoMatriz.dado_de_baja ? 'De baja' : 'Activo'}
+                        </span>
+                      </span>
                       <span>
                         <strong>Estado de Cuota: </strong>
                         {alumnoMatriz.cuota_al_dia ? (
