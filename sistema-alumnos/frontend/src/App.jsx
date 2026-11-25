@@ -76,6 +76,7 @@ function GestionAcademica({ onCerrarSesion }) {
 
   // ================= ESTADOS: INSCRIPCIÓN ALUMNOS =================
   const [dniInscripcion, setDniInscripcion] = useState('');
+  const [codigoVerificacionInscripcion, setCodigoVerificacionInscripcion] = useState('');
   const [datosAlumno, setDatosAlumno] = useState(null);
   const [errorInscripcion, setErrorInscripcion] = useState('');
   const [exitoInscripcion, setExitoInscripcion] = useState('');
@@ -109,6 +110,7 @@ function GestionAcademica({ onCerrarSesion }) {
   const [resultadosAlumnosPago, setResultadosAlumnosPago] = useState([]);
   const [buscandoAlumnosPago, setBuscandoAlumnosPago] = useState(false);
   const [alumnoSeleccionadoPago, setAlumnoSeleccionadoPago] = useState(null);
+  const [codigoVerificacionPago, setCodigoVerificacionPago] = useState('');
   const [reciboPago, setReciboPago] = useState(null);
   const [inicioControlCuotas, setInicioControlCuotas] = useState('');
   const [periodoTarifa, setPeriodoTarifa] = useState(() => fechaLocalISO().slice(0, 7));
@@ -254,10 +256,35 @@ function GestionAcademica({ onCerrarSesion }) {
 
   const seleccionarAlumnoParaPago = (alumno) => {
     setAlumnoSeleccionadoPago(alumno);
+    setCodigoVerificacionPago('');
     setFormPago(current => ({ ...current, dni: alumno.dni }));
     setResultadosAlumnosPago([]);
     setErrorPago('');
     setReciboPago(null);
+  };
+
+  const guardarCodigoVerificacionPago = async (event) => {
+    event.preventDefault();
+    if (!alumnoSeleccionadoPago) return;
+    setErrorPago('');
+    setMensajePago('');
+    setGuardandoConfiguracionCuotas(true);
+    try {
+      const res = await adminFetch(`${API_BASE}/api/secretaria/alumnos/${encodeURIComponent(alumnoSeleccionadoPago.dni)}/codigo-verificacion`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ codigo: codigoVerificacionPago })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar el código');
+      setAlumnoSeleccionadoPago(current => current ? { ...current, tiene_codigo_verificacion: true } : current);
+      setCodigoVerificacionPago(codigoVerificacionPago.trim());
+      setMensajePago('Código guardado. Entrégaselo al alumno ahora; solo queda visible en este formulario hasta que cambies de alumno.');
+    } catch (err) {
+      setErrorPago(err.message);
+    } finally {
+      setGuardandoConfiguracionCuotas(false);
+    }
   };
 
   const cargarConfiguracionCuotas = async () => {
@@ -496,7 +523,11 @@ function GestionAcademica({ onCerrarSesion }) {
     setCargandoInscripcion(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/inscripcion/validar/${dniInscripcion.trim()}`);
+      const res = await fetch(`${API_BASE}/api/inscripcion/validar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dni: dniInscripcion.trim(), codigoVerificacion: codigoVerificacionInscripcion })
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo consultar el padrón');
       setDatosAlumno(data);
@@ -540,6 +571,7 @@ function GestionAcademica({ onCerrarSesion }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dni: datosAlumno.alumno.dni,
+          codigoVerificacion: codigoVerificacionInscripcion,
           materiasSeleccionadas: materiasElegidas
         })
       });
@@ -979,12 +1011,12 @@ function GestionAcademica({ onCerrarSesion }) {
                 Inscripción a Cursada de Asignaturas
               </h2>
               <p style={{ margin: 0, fontSize: '13px', color: '#cbdfe9' }}>
-                Ingrese su D.N.I. para validar estado administrativo y correlatividades
+                Ingrese su D.N.I. y código personal para validar el estado de cuotas
               </p>
             </div>
 
             <div style={{ padding: '30px 25px' }}>
-              <form onSubmit={handleConsultarAlumno} style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginBottom: '20px' }}>
+              <form onSubmit={handleConsultarAlumno} style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '20px' }}>
                 <input
                   type="text"
                   placeholder="D.N.I. (sin puntos)..."
@@ -994,6 +1026,24 @@ function GestionAcademica({ onCerrarSesion }) {
                   style={{
                     padding: '12px 16px',
                     width: '260px',
+                    fontSize: '15px',
+                    border: '2px solid #cbd5e1',
+                    borderRadius: '8px',
+                    backgroundColor: '#ffffff',
+                    color: '#1e293b',
+                    outline: 'none'
+                  }}
+                />
+                <input
+                  type="password"
+                  placeholder="Código de verificación"
+                  value={codigoVerificacionInscripcion}
+                  onChange={e => setCodigoVerificacionInscripcion(e.target.value)}
+                  autoComplete="off"
+                  required
+                  style={{
+                    padding: '12px 16px',
+                    width: '230px',
                     fontSize: '15px',
                     border: '2px solid #cbd5e1',
                     borderRadius: '8px',
@@ -1051,11 +1101,20 @@ function GestionAcademica({ onCerrarSesion }) {
                         DNI: {datosAlumno.alumno.dni}
                       </div>
                     </div>
-                    <span style={{ background: '#dcfce7', color: '#15803d', padding: '6px 14px', borderRadius: '20px', fontSize: '13px', fontWeight: '600' }}>
-                      Cuota al Día ✓
+                    <span style={{
+                      background: datosAlumno.alumno.cuota_al_dia ? '#dcfce7' : '#fef2f2',
+                      color: datosAlumno.alumno.cuota_al_dia ? '#15803d' : '#b91c1c',
+                      padding: '6px 14px', borderRadius: '20px', fontSize: '13px', fontWeight: '600'
+                    }}>
+                      {datosAlumno.alumno.cuota_al_dia ? 'Cuota al Día ✓' : 'Cuota pendiente'}
                     </span>
                   </div>
 
+                  {!datosAlumno.alumno.cuota_al_dia ? (
+                    <p role="status" style={{ color: '#b91c1c', textAlign: 'center' }}>
+                      El código es válido, pero hay cuotas pendientes. Regulariza tu situación con secretaría para inscribirte.
+                    </p>
+                  ) : <>
                   <h3 style={{ fontSize: '15px', color: '#163654', margin: '0 0 10px 0' }}>
                     Seleccione las Asignaturas a Cursar:
                   </h3>
@@ -1112,6 +1171,7 @@ function GestionAcademica({ onCerrarSesion }) {
                     }}>
                     Confirmar Inscripción ({materiasElegidas.length} asignatura/s)
                   </button>
+                  </>}
                 </div>
               )}
             </div>
@@ -1362,8 +1422,30 @@ function GestionAcademica({ onCerrarSesion }) {
                   <div><strong>Alumno seleccionado: {alumnoSeleccionadoPago.alumno}</strong><div>DNI: {alumnoSeleccionadoPago.dni}</div>
                     {alumnoSeleccionadoPago.ultimo_periodo ? <div>Cuota anterior: {alumnoSeleccionadoPago.ultimo_periodo} · {new Intl.NumberFormat('es-AR', { style: 'currency', currency: 'ARS' }).format(Number(alumnoSeleccionadoPago.ultimo_importe))} ({String(alumnoSeleccionadoPago.ultima_fecha_pago || '').slice(0, 10)})</div> : <div>No registra pagos anteriores.</div>}
                   </div>
-                  <button type="button" onClick={() => { setAlumnoSeleccionadoPago(null); setFormPago(current => ({ ...current, dni: '' })); setReciboPago(null); }} style={{ padding: '7px 10px' }}>Cambiar alumno</button>
+                  <button type="button" onClick={() => { setAlumnoSeleccionadoPago(null); setCodigoVerificacionPago(''); setFormPago(current => ({ ...current, dni: '' })); setReciboPago(null); }} style={{ padding: '7px 10px' }}>Cambiar alumno</button>
                 </div>
+                <form onSubmit={guardarCodigoVerificacionPago} style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'end', marginTop: 12, paddingTop: 12, borderTop: '1px solid #bbf7d0' }}>
+                  <label style={{ display: 'grid', gap: 5, flex: '1 1 240px' }}>
+                    Código personal del alumno
+                    <input
+                      type="text"
+                      minLength="4"
+                      maxLength="64"
+                      required
+                      autoComplete="off"
+                      value={codigoVerificacionPago}
+                      onChange={e => setCodigoVerificacionPago(e.target.value)}
+                      placeholder="Ingresa un código único (4 a 64 caracteres)"
+                      style={{ padding: 9 }}
+                    />
+                  </label>
+                  <button type="submit" disabled={guardandoConfiguracionCuotas} style={{ padding: '9px 12px', color: '#fff', background: '#163654', border: 0, borderRadius: 6, cursor: 'pointer' }}>
+                    {guardandoConfiguracionCuotas ? 'Guardando…' : alumnoSeleccionadoPago.tiene_codigo_verificacion ? 'Cambiar código' : 'Guardar código'}
+                  </button>
+                  <span style={{ flexBasis: '100%', color: alumnoSeleccionadoPago.tiene_codigo_verificacion ? '#166534' : '#92400e', fontSize: 13 }}>
+                    {alumnoSeleccionadoPago.tiene_codigo_verificacion ? 'Este alumno ya tiene un código asignado.' : 'Este alumno todavía no tiene un código asignado.'} El código guardado se almacena protegido; anótalo para entregárselo al alumno.
+                  </span>
+                </form>
               </div>}
             </section>
 

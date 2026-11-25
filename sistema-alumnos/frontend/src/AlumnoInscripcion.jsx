@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 
 export default function AlumnoInscripcion() {
   const [dni, setDni] = useState('');
+  const [codigoVerificacion, setCodigoVerificacion] = useState('');
   const [datosAlumno, setDatosAlumno] = useState(null);
   const [error, setError] = useState('');
   const [exito, setExito] = useState('');
@@ -31,7 +32,11 @@ export default function AlumnoInscripcion() {
     setCargando(true);
 
     try {
-      const res = await fetch(`${API_BASE}/api/inscripcion/validar/${dni.trim()}`);
+      const res = await fetch(`${API_BASE}/api/inscripcion/validar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dni: dni.trim(), codigoVerificacion })
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo consultar el padrón');
       setDatosAlumno(data);
@@ -80,6 +85,7 @@ export default function AlumnoInscripcion() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dni: datosAlumno.alumno.dni,
+          codigoVerificacion,
           ofertaIds: materiasElegidas
         })
       });
@@ -170,12 +176,12 @@ export default function AlumnoInscripcion() {
               Inscripción a Cursada de Asignaturas
             </h2>
             <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>
-              Ingrese su DNI para comprobar estado administrativo y correlatividades
+              Ingrese su DNI y código personal para comprobar el estado de cuotas
             </p>
           </div>
 
           {/* CONSULTA POR DNI */}
-          <form onSubmit={handleConsultar} style={{ display: 'flex', gap: '10px', justifyContent: 'center', marginBottom: '20px' }}>
+          <form onSubmit={handleConsultar} style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', justifyContent: 'center', marginBottom: '20px' }}>
             <input
               type="text"
               placeholder="Número de D.N.I. (sin puntos)..."
@@ -193,6 +199,22 @@ export default function AlumnoInscripcion() {
               }}
               onFocus={(e) => e.target.style.borderColor = '#204c73'}
               onBlur={(e) => e.target.style.borderColor = '#cbd5e1'}
+            />
+            <input
+              type="password"
+              placeholder="Código de verificación"
+              value={codigoVerificacion}
+              onChange={e => setCodigoVerificacion(e.target.value)}
+              autoComplete="off"
+              required
+              style={{
+                padding: '12px 16px',
+                width: '230px',
+                fontSize: '15px',
+                border: '2px solid #cbd5e1',
+                borderRadius: '8px',
+                outline: 'none'
+              }}
             />
             <button
               type="submit"
@@ -273,18 +295,23 @@ export default function AlumnoInscripcion() {
                 </div>
 
                 <div style={{
-                  background: '#dcfce7',
-                  color: '#15803d',
+                  background: datosAlumno.alumno.cuota_al_dia ? '#dcfce7' : '#fef2f2',
+                  color: datosAlumno.alumno.cuota_al_dia ? '#15803d' : '#b91c1c',
                   padding: '6px 14px',
                   borderRadius: '20px',
                   fontSize: '13px',
                   fontWeight: '600',
                   border: '1px solid #bbf7d0'
                 }}>
-                  Cuota al Día ✓
+                  {datosAlumno.alumno.cuota_al_dia ? 'Cuota al Día ✓' : 'Cuota pendiente'}
                 </div>
               </div>
 
+              {!datosAlumno.alumno.cuota_al_dia ? (
+                <p role="status" style={{ color: '#b91c1c', textAlign: 'center' }}>
+                  El código es válido, pero hay cuotas pendientes. Regulariza tu situación con secretaría para inscribirte.
+                </p>
+              ) : <>
               {/* LISTA DE MATERIAS */}
               <h3 style={{ fontSize: '16px', color: '#163654', margin: '0 0 12px 0', borderBottom: '2px solid #e2e8f0', paddingBottom: '6px' }}>
                 Cursos y mesas de examen disponibles
@@ -384,6 +411,7 @@ export default function AlumnoInscripcion() {
                 }}>
                 Confirmar Inscripción ({materiasElegidas.length} asignatura/s)
               </button>
+              </>}
             </div>
           )}
         </div>

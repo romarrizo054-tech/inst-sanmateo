@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const mysql = require('mysql2/promise');
 const path = require('path');
+const crypto = require('crypto');
 
 const app = express();
 
@@ -205,6 +206,13 @@ const ofertasSchemaReady = (async () => {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS codigos_verificacion_alumno (
+      alumno_dni VARCHAR(30) NOT NULL PRIMARY KEY,
+      codigo_hash CHAR(64) NOT NULL UNIQUE,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS cuotas_periodos (
       periodo CHAR(7) NOT NULL PRIMARY KEY,
       importe DECIMAL(12, 2) NOT NULL,
@@ -276,6 +284,27 @@ async function actualizarEstadoCuota(dni, executor = pool) {
   const estado = await obtenerEstadoCuota(dni, executor);
   if (estado !== null) await executor.query('UPDATE alumnos SET cuota_al_dia = ? WHERE dni = ?', [estado, dni]);
   return estado;
+}
+
+function hashCodigoVerificacion(codigo) {
+  return crypto.createHash('sha256').update(codigo).digest('hex');
+}
+
+async function validarCodigoVerificacion(dni, codigo, executor = pool) {
+  await ofertasSchemaReady;
+  const codigoLimpio = typeof codigo === 'string' ? codigo.trim() : '';
+  if (!codigoLimpio || codigoLimpio.length > 64) return false;
+
+  const [rows] = await executor.query(
+    'SELECT codigo_hash FROM codigos_verificacion_alumno WHERE alumno_dni = ?',
+    [dni]
+  );
+  if (!rows.length) return false;
+
+  const hashRecibido = Buffer.from(hashCodigoVerificacion(codigoLimpio), 'hex');
+  const hashGuardado = Buffer.from(rows[0].codigo_hash, 'hex');
+  return hashRecibido.length === hashGuardado.length &&
+    crypto.timingSafeEqual(hashRecibido, hashGuardado);
 }
 
 async function recalcularEstadosCuotaTodos() {
@@ -823,13 +852,15 @@ app.get('/api/secretaria/alumnos/buscar', requiereSecretaria, async (req, res) =
     const [rows] = await pool.query(`
       SELECT a.dni, a.alumno, a.carrera, a.cuota_al_dia,
         p.periodo AS ultimo_periodo, p.importe AS ultimo_importe,
-        p.fecha_pago AS ultima_fecha_pago, p.medio AS ultimo_medio
+        p.fecha_pago AS ultima_fecha_pago, p.medio AS ultimo_medio,
+        cv.alumno_dni IS NOT NULL AS tiene_codigo_verificacion
       FROM alumnos a
       LEFT JOIN pagos_cuotas p ON p.id = (
         SELECT p2.id FROM pagos_cuotas p2
         WHERE p2.alumno_dni = a.dni
         ORDER BY p2.fecha_pago DESC, p2.id DESC LIMIT 1
       )
+      LEFT JOIN codigos_verificacion_alumno cv ON cv.alumno_dni = a.dni
       WHERE a.dni LIKE ? OR a.alumno LIKE ?
       ORDER BY a.alumno ASC
       LIMIT 20
@@ -860,6 +891,52 @@ app.get('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) => 
   } catch (error) {
     console.error('Error al consultar pagos de cuotas:', error);
     res.status(500).json({ error: 'No se pudo cargar el registro de pagos' });
+  }
+});
+
+app.put('/api/secretaria/alumnos/:dni/codigo-verificacion', requiereSecretaria, async (req, res) => {
+  try {
+    await ofertasSchemaReady;
+    const dni = String(req.params.dni || '').trim();
+    const codigo = typeof req.body.codigo === 'string' ? req.body.codigo.trim() : '';
+    if (codigo.length < 4 || codigo.length > 64) {
+      return res.status(400).json({ error: 'El código debe tener entre 4 y 64 caracteres' });
+    }
+
+    const [alumnos] = await pool.query('SELECT dni FROM alumnos WHERE dni = ?', [dni]);
+    if (!alumnos.length) return res.status(404).json({ error: 'No se encontró un alumno con ese DNI' });
+
+    const codigoHash = hashCodigoVerificacion(codigo);
+    const [codigoExistente] = await pool.query(
+      'SELECT alumno_dni FROM codigos_verificacion_alumno WHERE codigo_hash = ?',
+      [codigoHash]
+    );
+    if (codigoExistente.length && codigoExistente[0].alumno_dni !== dni) {
+      return res.status(409).json({ error: 'Ese código ya está asignado a otro alumno. Ingresa uno diferente.' });
+    }
+
+    const [alumnoConCodigo] = await pool.query(
+      'SELECT alumno_dni FROM codigos_verificacion_alumno WHERE alumno_dni = ?',
+      [dni]
+    );
+    if (alumnoConCodigo.length) {
+      await pool.query(
+        'UPDATE codigos_verificacion_alumno SET codigo_hash = ? WHERE alumno_dni = ?',
+        [codigoHash, dni]
+      );
+    } else {
+      await pool.query(
+        'INSERT INTO codigos_verificacion_alumno (alumno_dni, codigo_hash) VALUES (?, ?)',
+        [dni, codigoHash]
+      );
+    }
+    res.json({ message: 'Código de verificación guardado', tiene_codigo_verificacion: true });
+  } catch (error) {
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'Ese código ya está asignado a otro alumno. Ingresa uno diferente.' });
+    }
+    console.error('Error al guardar código de verificación:', error);
+    res.status(500).json({ error: 'No se pudo guardar el código de verificación' });
   }
 });
 
@@ -912,14 +989,18 @@ app.post('/api/secretaria/pagos-cuotas', requiereSecretaria, async (req, res) =>
   }
 });
 
-// Validar requisitos para el link de inscripción del alumno
-app.get('/api/inscripcion/validar/:dni', async (req, res) => {
+// Validar identidad y requisitos para el link de inscripción del alumno
+app.post('/api/inscripcion/validar', async (req, res) => {
   try {
-    const dni = req.params.dni.trim();
+    const dni = String(req.body.dni || '').trim();
+    const codigo = req.body.codigoVerificacion;
+    if (!dni || !(await validarCodigoVerificacion(dni, codigo))) {
+      return res.status(403).json({ error: 'DNI o código de verificación incorrecto. Consulta el código con secretaría.' });
+    }
     const [alumnoRows] = await pool.query('SELECT dni, alumno, cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
     
     if (alumnoRows.length === 0) {
-      return res.status(404).json({ error: 'El D.N.I. ingresado no existe en el padrón de alumnos' });
+      return res.status(403).json({ error: 'DNI o código de verificación incorrecto. Consulta el código con secretaría.' });
     }
 
     const alumno = alumnoRows[0];
@@ -927,10 +1008,6 @@ app.get('/api/inscripcion/validar/:dni', async (req, res) => {
     if (bajas.length) {
       return res.status(403).json({ error: 'El alumno está dado de baja. Comuníquese con secretaría.' });
     }
-    if (!alumno.cuota_al_dia) {
-      return res.status(403).json({ error: 'Registra deuda de cuotas. Por favor, regularice su situación en administración para inscribirse.' });
-    }
-
     // Consultar materias aprobadas (nota >= 4 o condición P/R)
     const [calificaciones] = await pool.query(
       "SELECT materia FROM calificaciones WHERE alumno_dni = ? AND (nota_num >= 4 OR condicion IN ('P', 'R'))",
@@ -965,9 +1042,13 @@ app.post('/api/inscripcion/confirmar-ofertas', async (req, res) => {
   try {
     await ofertasSchemaReady;
     const dni = String(req.body.dni || '').trim();
+    const codigo = req.body.codigoVerificacion;
     const ofertaIds = [...new Set((req.body.ofertaIds || []).map(Number).filter(Number.isInteger))];
     if (!dni || ofertaIds.length === 0) {
       return res.status(400).json({ error: 'Selecciona al menos un curso o una mesa' });
+    }
+    if (!(await validarCodigoVerificacion(dni, codigo))) {
+      return res.status(403).json({ error: 'El código de verificación no es válido' });
     }
 
     const [alumnos] = await pool.query('SELECT dni, cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);
@@ -1032,9 +1113,13 @@ app.post('/api/inscripcion/confirmar', async (req, res) => {
   try {
     await ofertasSchemaReady;
     const dni = String(req.body.dni || '').trim();
+    const codigo = req.body.codigoVerificacion;
     const materiasSeleccionadas = [...new Set((req.body.materiasSeleccionadas || []).map(m => String(m).trim()).filter(Boolean))];
     if (!dni || materiasSeleccionadas.length === 0) {
       return res.status(400).json({ error: 'Debe seleccionar al menos una materia' });
+    }
+    if (!(await validarCodigoVerificacion(dni, codigo))) {
+      return res.status(403).json({ error: 'El código de verificación no es válido' });
     }
 
     const [alumnos] = await pool.query('SELECT cuota_al_dia FROM alumnos WHERE dni = ?', [dni]);

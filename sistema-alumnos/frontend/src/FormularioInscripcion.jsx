@@ -14,6 +14,7 @@ const MATERIAS_OFERTADAS = [
 
 export default function FormularioInscripcion() {
   const [dni, setDni] = useState('');
+  const [codigoVerificacion, setCodigoVerificacion] = useState('');
   const [datosAlumno, setDatosAlumno] = useState(null);
   const [error, setError] = useState('');
   const [materiasAprobadas, setMateriasAprobadas] = useState([]);
@@ -31,7 +32,11 @@ export default function FormularioInscripcion() {
     setSeleccionadas([]);
 
     try {
-      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/inscripcion/validar/${dni.trim()}`);
+      const res = await fetch(`${import.meta.env.VITE_API_URL || ''}/api/inscripcion/validar`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dni: dni.trim(), codigoVerificacion })
+      });
       const data = await res.json();
 
       if (!res.ok) {
@@ -86,6 +91,7 @@ export default function FormularioInscripcion() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           dni: datosAlumno.dni,
+          codigoVerificacion,
           materiasSeleccionadas: seleccionadas
         })
       });
@@ -114,6 +120,15 @@ export default function FormularioInscripcion() {
           required
           style={{ padding: '8px', width: '250px', fontSize: '15px' }}
         />
+        <input
+          type="password"
+          placeholder="Código de verificación..."
+          value={codigoVerificacion}
+          onChange={e => setCodigoVerificacion(e.target.value)}
+          required
+          autoComplete="off"
+          style={{ padding: '8px', width: '220px', fontSize: '15px' }}
+        />
         <button type="submit" style={{ padding: '8px 16px', background: '#0066cc', color: '#fff', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
           Verificar Estado
         </button>
@@ -136,9 +151,14 @@ export default function FormularioInscripcion() {
           <div style={{ background: '#e9ecef', padding: '12px', borderRadius: '6px', marginBottom: '20px' }}>
             <p style={{ margin: '4px 0' }}><strong>Alumno:</strong> {datosAlumno.alumno}</p>
             <p style={{ margin: '4px 0' }}><strong>D.N.I.:</strong> {datosAlumno.dni}</p>
-            <p style={{ margin: '4px 0', color: 'green' }}><strong>Estado de Cuota:</strong> Al día ✅</p>
+            <p style={{ margin: '4px 0', color: datosAlumno.cuota_al_dia ? 'green' : '#b91c1c' }}>
+              <strong>Estado de Cuota:</strong> {datosAlumno.cuota_al_dia ? 'Al día ✅' : 'Pendiente'}
+            </p>
           </div>
 
+          {!datosAlumno.cuota_al_dia ? (
+            <p role="status" style={{ color: '#b91c1c' }}>Regulariza tu situación con secretaría para inscribirte.</p>
+          ) : <>
           <h4>Selecciona las materias a cursar:</h4>
           <table border="1" cellPadding="8" style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
             <thead>
@@ -186,6 +206,7 @@ export default function FormularioInscripcion() {
             }}>
             Confirmar Inscripción ({seleccionadas.length})
           </button>
+        </>}
         </div>
       )}
     </div>
